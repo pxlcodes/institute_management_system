@@ -143,7 +143,7 @@ class ServiceTests(unittest.TestCase):
             )
             self.assertEqual(
                 int(db.query_one("SELECT MAX(version) version FROM schema_migrations")["version"]),
-                8,
+                9,
             )
             certificate_columns = {
                 row["name"] for row in db.query("PRAGMA table_info(course_certificates)")

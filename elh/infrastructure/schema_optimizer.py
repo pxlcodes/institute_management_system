@@ -28,7 +28,9 @@ COUNTERPARTY_PAYABLE_VERSION = 7
 COUNTERPARTY_PAYABLE_NAME = "add payee, vendor, and credit payable tracking"
 WORK_ITEMS_VERSION = 8
 WORK_ITEMS_NAME = "add staff tasks and bug report tracking"
-LATEST_SCHEMA_VERSION = WORK_ITEMS_VERSION
+ATTENDANCE_ALERT_REVIEW_VERSION = 9
+ATTENDANCE_ALERT_REVIEW_NAME = "add attendance alert review history"
+LATEST_SCHEMA_VERSION = ATTENDANCE_ALERT_REVIEW_VERSION
 
 
 INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
@@ -54,6 +56,7 @@ INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("todo_items", "idx_todo_staff_status", ("assigned_teacher_id", "status")),
     ("todo_items", "idx_todo_status_due", ("status", "due_date")),
     ("bug_reports", "idx_bug_status_created", ("status", "created_at")),
+    ("attendance_alert_reviews", "idx_attendance_alert_review_student", ("student_id", "id")),
     ("account_transfers", "idx_transfers_date", ("transfer_date",)),
     ("device_user_mappings", "idx_device_mapping_person", ("person_type", "person_id", "status")),
     ("attendance_logs", "idx_attendance_person_time", ("person_type", "person_id", "occurred_at")),
@@ -173,6 +176,7 @@ def normalize_mysql_schema(db) -> None:
         ensure_mysql_certificate_pdf_migration(db)
         ensure_mysql_counterparty_payable_migration(db)
         ensure_mysql_work_items_migration(db)
+        ensure_mysql_attendance_alert_review_migration(db)
         ensure_mysql_indexes(db)
         ensure_mysql_bill_month_guard(db)
         ensure_mysql_certificate_migration(db)
@@ -218,6 +222,7 @@ def normalize_mysql_schema(db) -> None:
     ensure_mysql_certificate_pdf_migration(db)
     ensure_mysql_counterparty_payable_migration(db)
     ensure_mysql_work_items_migration(db)
+    ensure_mysql_attendance_alert_review_migration(db)
     ensure_mysql_indexes(db)
     ensure_mysql_bill_month_guard(db)
     ensure_mysql_certificate_migration(db)
@@ -381,6 +386,20 @@ def ensure_mysql_work_items_migration(db) -> None:
     applied = db.query_one("SELECT version FROM schema_migrations WHERE version=?", (WORK_ITEMS_VERSION,))
     if not applied:
         db.execute("INSERT INTO schema_migrations (version,migration_name) VALUES (?,?)", (WORK_ITEMS_VERSION, WORK_ITEMS_NAME))
+
+
+def ensure_mysql_attendance_alert_review_migration(db) -> None:
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS attendance_alert_reviews ("
+        "id INTEGER AUTO_INCREMENT PRIMARY KEY,student_id INTEGER NOT NULL,review_status VARCHAR(50) NOT NULL,"
+        "note TEXT,follow_up_date VARCHAR(30),reviewed_by_user_id INTEGER NULL,"
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE,"
+        "FOREIGN KEY(reviewed_by_user_id) REFERENCES app_users(id) ON DELETE SET NULL) ENGINE=InnoDB"
+    )
+    applied = db.query_one("SELECT version FROM schema_migrations WHERE version=?", (ATTENDANCE_ALERT_REVIEW_VERSION,))
+    if not applied:
+        db.execute("INSERT INTO schema_migrations (version,migration_name) VALUES (?,?)", (ATTENDANCE_ALERT_REVIEW_VERSION, ATTENDANCE_ALERT_REVIEW_NAME))
 
 
 def ensure_mysql_bill_month_guard(db) -> None:
@@ -600,6 +619,10 @@ def normalize_sqlite_schema(path) -> None:
         connection.execute(
             "INSERT OR IGNORE INTO schema_migrations (version,migration_name) VALUES (?,?)",
             (WORK_ITEMS_VERSION, WORK_ITEMS_NAME),
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version,migration_name) VALUES (?,?)",
+            (ATTENDANCE_ALERT_REVIEW_VERSION, ATTENDANCE_ALERT_REVIEW_NAME),
         )
         connection.commit()
     except Exception:

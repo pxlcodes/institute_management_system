@@ -222,11 +222,19 @@ class AttendanceService:
             occurred = row["occurred_at"] if isinstance(row["occurred_at"], datetime) else datetime.fromisoformat(str(row["occurred_at"]))
             monthly_punches[int(row["person_id"])].add(occurred.date())
         rows = self.repository.db.query(
-            "SELECT s.id,s.student_name,s.class_name,MIN(e.start_date) enrollment_start,MAX(l.occurred_at) last_seen "
+            "SELECT s.id,s.student_name,s.class_name,s.contact,s.parent_name,"
+            "GROUP_CONCAT(DISTINCT c.course_name) courses,MIN(e.start_date) enrollment_start,MAX(l.occurred_at) last_seen "
             "FROM students s JOIN enrollments e ON e.student_id=s.id AND e.status='Active' "
+            "JOIN courses c ON c.id=e.course_id "
             "LEFT JOIN attendance_logs l ON l.person_type='student' AND l.person_id=s.id "
-            "WHERE s.status='Active' GROUP BY s.id,s.student_name,s.class_name"
+            "WHERE s.status='Active' GROUP BY s.id,s.student_name,s.class_name,s.contact,s.parent_name"
         )
+        review_rows = self.repository.db.query(
+            "SELECT r.*,COALESCE(u.display_name,u.username,'') reviewer FROM attendance_alert_reviews r "
+            "LEFT JOIN app_users u ON u.id=r.reviewed_by_user_id "
+            "WHERE r.id IN (SELECT MAX(id) FROM attendance_alert_reviews GROUP BY student_id)"
+        )
+        reviews = {int(row["student_id"]): row for row in review_rows}
         alerts = []
         month_start_ad = datetime.fromisoformat(start_at).date()
         for row in rows:
@@ -255,13 +263,30 @@ class AttendanceService:
             if missing_days >= monthly_limit:
                 reasons.append(f"{missing_days} missing day(s) this month")
             if reasons:
+                review = reviews.get(int(row["id"]))
                 alerts.append({
                     "student_id": int(row["id"]), "student_name": row["student_name"],
-                    "class_name": row["class_name"] or "", "last_seen": last_seen,
+                    "class_name": row["class_name"] or "", "contact": row["contact"] or "",
+                    "parent_name": row["parent_name"] or "", "courses": row["courses"] or "",
+                    "last_seen": last_seen,
                     "consecutive_days": consecutive_days, "monthly_missing_days": missing_days,
                     "reason": "; ".join(reasons),
+                    "review_status": review["review_status"] if review else "Not reviewed",
+                    "review_note": review["note"] if review else "",
+                    "follow_up_date": review["follow_up_date"] if review else "",
+                    "reviewer": review["reviewer"] if review else "",
+                    "reviewed_at": review["created_at"] if review else None,
                 })
         return sorted(alerts, key=lambda row: (-row["consecutive_days"], -row["monthly_missing_days"], row["student_name"].casefold()))
+
+    def record_attendance_alert_review(self, student_id: int, status: str, note: str, follow_up_date: str, user_id: int | None) -> None:
+        allowed = {"Contacted", "Monitoring", "Approved Leave", "Left Institution", "No Action Needed"}
+        if status not in allowed:
+            raise ValueError("Select a valid review status.")
+        self.repository.db.execute(
+            "INSERT INTO attendance_alert_reviews (student_id,review_status,note,follow_up_date,reviewed_by_user_id) VALUES (?,?,?,?,?)",
+            (int(student_id), status, note.strip(), follow_up_date.strip() or None, user_id),
+        )
 
     def students_present_today(self) -> list[dict]:
         now = datetime.now()

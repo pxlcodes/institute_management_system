@@ -411,6 +411,13 @@ CREATE TABLE IF NOT EXISTS bug_reports (
  resolution_note TEXT, resolved_at DATETIME NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
  FOREIGN KEY(reported_by_user_id) REFERENCES app_users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS attendance_alert_reviews (
+ id INTEGER AUTO_INCREMENT PRIMARY KEY, student_id INTEGER NOT NULL,
+ review_status VARCHAR(50) NOT NULL, note TEXT, follow_up_date VARCHAR(30),
+ reviewed_by_user_id INTEGER NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE,
+ FOREIGN KEY(reviewed_by_user_id) REFERENCES app_users(id) ON DELETE SET NULL
+) ENGINE=InnoDB;
 CREATE TABLE IF NOT EXISTS sms_event_templates (
  event_key VARCHAR(50) PRIMARY KEY, event_name VARCHAR(100) NOT NULL,
  enabled INTEGER NOT NULL DEFAULT 1, template_text TEXT NOT NULL,
