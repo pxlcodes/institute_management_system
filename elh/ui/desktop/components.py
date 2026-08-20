@@ -51,6 +51,8 @@ class BasePage(ttk.Frame):
         self.form_dialog.configure(background="#EEF3F8")
         self.form_dialog.withdraw()
         self.form_dialog.protocol("WM_DELETE_WINDOW", self.hide_form_dialog)
+        self.form_dialog.bind("<Escape>", lambda _event: self.hide_form_dialog())
+        self.form_dialog.bind("<Control-Return>", lambda _event: self._invoke_form_primary())
         self.form_dialog.resizable(True, True)
         self.page_toolbar = ttk.Frame(self, style="Toolbar.TFrame", padding=(8,6))
         self.page_toolbar.pack(fill="x", pady=(8, 10))
@@ -70,13 +72,36 @@ class BasePage(ttk.Frame):
         width=max(640,self.form_dialog.winfo_reqwidth()+30);height=max(420,self.form_dialog.winfo_reqheight()+30)
         x=max(0,(self.form_dialog.winfo_screenwidth()-width)//2);y=max(0,(self.form_dialog.winfo_screenheight()-height)//2)
         self.form_dialog.geometry(f"{width}x{height}+{x}+{y}")
-        self.form_dialog.deiconify();self.form_dialog.lift();self.form_dialog.focus_force();self.form_dialog.grab_set()
+        self.form_dialog.deiconify();self.form_dialog.lift();self.form_dialog.grab_set()
+        self._focus_first_input(self.form_dialog)
 
     def hide_form_dialog(self):
         if self.form_dialog:
             try:self.form_dialog.grab_release()
             except tk.TclError:pass
             self.form_dialog.withdraw()
+
+    @staticmethod
+    def _descendants(widget):
+        for child in widget.winfo_children():
+            yield child
+            yield from BasePage._descendants(child)
+
+    def _focus_first_input(self, container) -> None:
+        for widget in self._descendants(container):
+            if isinstance(widget, (ttk.Entry, ttk.Combobox, tk.Entry, tk.Text)):
+                widget.focus_set()
+                return
+
+    def _invoke_form_primary(self):
+        """Save the open form with Ctrl+Enter without relying on pointer input."""
+        if not self.form_dialog or not self.form_dialog.winfo_viewable():
+            return "break"
+        for widget in self._descendants(self.form_dialog):
+            if isinstance(widget, ttk.Button) and widget.cget("text").lower().startswith(("save", "create", "submit", "receive")):
+                widget.invoke()
+                break
+        return "break"
 
     def add_toolbar_menu(self, label: str, actions: list[tuple[str, object | None]]) -> ttk.Menubutton:
         """Keep secondary actions out of the main toolbar.
@@ -177,6 +202,8 @@ class CrudPage(BasePage):
         filter_combo.bind("<<ComboboxSelected>>", apply_filter)
         ttk.Button(search_row, text="Clear", command=lambda: search_var.set("")).pack(side="left", padx=6)
         tree.search_var, tree.filter_var = search_var, filter_var
+        tree.bind("<Return>", lambda _event: tree.event_generate("<Double-1>"), add="+")
+        tree.bind("<space>", lambda _event: tree.event_generate("<Double-1>"), add="+")
         return tree
 
     @staticmethod

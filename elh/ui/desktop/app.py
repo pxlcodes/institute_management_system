@@ -90,6 +90,7 @@ class ManagementApp(tk.Tk):
             return
         self._build_menu()
         self._build_layout()
+        self._install_keyboard_shortcuts()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.bind_all("<Any-KeyPress>", self._record_activity, add="+")
         self.bind_all("<Any-ButtonPress>", self._record_activity, add="+")
@@ -191,17 +192,18 @@ class ManagementApp(tk.Tk):
         if self.can("administration.manage"):
             file_menu.add_command(label="System Administration", command=self.open_admin_panel)
             file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.on_close)
+        file_menu.add_command(label="Exit\tCtrl+Q", command=self.on_close)
         menu.add_cascade(label="File", menu=file_menu)
 
         session_menu = tk.Menu(menu, tearoff=0)
-        session_menu.add_command(label="Lock", command=self.lock_application)
+        session_menu.add_command(label="Lock\tCtrl+Alt+L", command=self.lock_application)
         session_menu.add_command(label="Change My Password", command=self.change_own_password)
-        session_menu.add_command(label="Logout", command=self.logout)
+        session_menu.add_command(label="Logout\tCtrl+Shift+L", command=self.logout)
         menu.add_cascade(label="Session", menu=session_menu)
 
         help_menu = tk.Menu(menu, tearoff=0)
-        help_menu.add_command(label="Report a Bug", command=self.open_bug_report)
+        help_menu.add_command(label="Report a Bug\tCtrl+Shift+B", command=self.open_bug_report)
+        help_menu.add_command(label="Keyboard Shortcuts\tF1", command=self.show_keyboard_shortcuts)
         help_menu.add_command(label="About", command=self.show_about)
         menu.add_cascade(label="Help", menu=help_menu)
         if self.can("billing.manage") or self.can("finance.manage"):
@@ -332,6 +334,93 @@ class ManagementApp(tk.Tk):
         self.page_title.set(name)
         for page_name,button in self.nav_buttons.items():
             button.configure(style="SidebarActive.TButton" if page_name==name else "Sidebar.TButton")
+
+    def _install_keyboard_shortcuts(self):
+        """Application-wide shortcuts that work without requiring the mouse."""
+        self.bind_all("<Control-n>", self._shortcut_new, add="+")
+        self.bind_all("<Control-f>", self._shortcut_search, add="+")
+        self.bind_all("<F5>", self._shortcut_refresh, add="+")
+        self.bind_all("<F6>", self._shortcut_navigation, add="+")
+        self.bind_all("<F2>", lambda _event: self._shortcut_toggle_menu(), add="+")
+        self.bind_all("<Alt-Left>", lambda _event: self._cycle_page(-1), add="+")
+        self.bind_all("<Alt-Right>", lambda _event: self._cycle_page(1), add="+")
+        self.bind_all("<Control-Alt-l>", lambda _event: self._shortcut_lock(), add="+")
+        self.bind_all("<Control-Shift-L>", lambda _event: self._shortcut_logout(), add="+")
+        self.bind_all("<Control-Shift-B>", lambda _event: self._shortcut_bug_report(), add="+")
+        self.bind_all("<Control-q>", lambda _event: self._shortcut_exit(), add="+")
+        self.bind_all("<F1>", lambda _event: self._shortcut_help(), add="+")
+
+    def _active_page(self):
+        return self.pages.get(self.page_title.get()) if hasattr(self, "pages") else None
+
+    def _shortcut_new(self, _event=None):
+        page = self._active_page()
+        if page and hasattr(page, "show_new_form"):
+            page.show_new_form()
+        return "break"
+
+    def _shortcut_search(self, _event=None):
+        page = self._active_page()
+        tree = getattr(page, "tree", None) if page else None
+        search = getattr(tree, "search_var", None)
+        if tree is not None and search is not None:
+            for child in tree.master.winfo_children():
+                for nested in child.winfo_children():
+                    if isinstance(nested, ttk.Entry):
+                        nested.focus_set(); return "break"
+        return "break"
+
+    def _shortcut_refresh(self, _event=None):
+        page = self._active_page()
+        if page: page.refresh()
+        return "break"
+
+    def _shortcut_navigation(self, _event=None):
+        if not getattr(self, "_sidebar_visible", False) and hasattr(self, "sidebar_scroll"):
+            self.toggle_sidebar()
+        if getattr(self, "nav_buttons", None) and self.page_title.get() in self.nav_buttons:
+            self.nav_buttons[self.page_title.get()].focus_set()
+        return "break"
+
+    def _shortcut_toggle_menu(self):
+        if hasattr(self, "sidebar_scroll"):
+            self.toggle_sidebar()
+        return "break"
+
+    def _cycle_page(self, direction: int):
+        names = list(self.pages)
+        if not names: return "break"
+        try: position = names.index(self.page_title.get())
+        except ValueError: position = 0
+        self.show_page(names[(position + direction) % len(names)])
+        return "break"
+
+    def _shortcut_lock(self): self.lock_application(); return "break"
+    def _shortcut_logout(self): self.logout(); return "break"
+    def _shortcut_bug_report(self): self.open_bug_report(); return "break"
+    def _shortcut_exit(self): self.on_close(); return "break"
+
+    def _shortcut_help(self):
+        self.show_keyboard_shortcuts(); return "break"
+
+    def show_keyboard_shortcuts(self):
+        messagebox.showinfo(
+            "Keyboard Shortcuts",
+            "Ctrl+N   New record / form\n"
+            "Ctrl+F   Search the current table\n"
+            "F5       Refresh current screen\n"
+            "F6       Focus navigation menu\n"
+            "F2       Show or hide navigation menu\n"
+            "Alt+Left / Alt+Right   Previous / next screen\n"
+            "Ctrl+Enter   Save the open form\n"
+            "Esc      Close the open form\n"
+            "Enter or Space on a table row   Open / edit it\n"
+            "Ctrl+Alt+L   Lock\n"
+            "Ctrl+Shift+L   Logout\n"
+            "Ctrl+Shift+B   Report a bug\n"
+            "Ctrl+Q   Exit",
+            parent=self,
+        )
 
     def toggle_sidebar(self):
         """Collapse navigation entirely; the header menu button restores it."""
