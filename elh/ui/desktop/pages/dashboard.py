@@ -44,10 +44,17 @@ class DashboardPage(BasePage):
         for i in range(4):
             grid.columnconfigure(i, weight=1)
 
-        ttk.Label(self, text="Students Present Today", style="SubTitle.TLabel").pack(
+        dashboard_tabs = ttk.Notebook(self)
+        dashboard_tabs.pack(fill="both", expand=True, pady=(12, 0))
+        attendance_tab = ttk.Frame(dashboard_tabs, padding=4)
+        accounts_tab = ttk.Frame(dashboard_tabs, padding=4)
+        dashboard_tabs.add(attendance_tab, text="Attendance & Follow-up")
+        dashboard_tabs.add(accounts_tab, text="Account Balances")
+
+        ttk.Label(attendance_tab, text="Students Present Today", style="SubTitle.TLabel").pack(
             anchor="w", pady=(14, 7), padx=4
         )
-        present_area = ttk.Frame(self)
+        present_area = ttk.Frame(attendance_tab)
         present_area.pack(fill="x")
         self.present_tree = CrudPage.make_tree(
             self,
@@ -60,24 +67,24 @@ class DashboardPage(BasePage):
                 ("last", "Last Punch", 170),
             ],
         )
-        self.present_tree.configure(height=5)
+        self.present_tree.configure(height=4)
 
-        ttk.Label(self, text="Attendance Follow-up Alerts", style="SubTitle.TLabel").pack(anchor="w", pady=(18, 7), padx=4)
-        alert_area = ttk.Frame(self); alert_area.pack(fill="x")
+        ttk.Label(attendance_tab, text="Attendance Follow-up Alerts", style="SubTitle.TLabel").pack(anchor="w", pady=(14, 7), padx=4)
+        alert_area = ttk.Frame(attendance_tab); alert_area.pack(fill="both", expand=True)
         self.alert_tree = CrudPage.make_tree(self, alert_area, [
             ("student", "Student", 220), ("class", "Class", 90), ("last", "Last Attendance", 155),
             ("consecutive", "No-Punch Days", 110), ("monthly", "Missing This Month", 130), ("review", "Review Status", 130), ("reason", "Review Reason", 300),
         ])
-        self.alert_tree.configure(height=5)
+        self.alert_tree.configure(height=7)
         self.alert_tree.bind("<Double-1>", self.review_selected_alert)
-        alert_actions = ttk.Frame(self, style="Toolbar.TFrame", padding=(8, 4)); alert_actions.pack(fill="x")
+        alert_actions = ttk.Frame(attendance_tab, style="Toolbar.TFrame", padding=(8, 4)); alert_actions.pack(fill="x")
         ttk.Button(alert_actions, text="Review Selected Alert", style="Accent.TButton", command=self.review_selected_alert).pack(side="left")
         ttk.Label(alert_actions, text="Double-click an alert to record contact, leave, or follow-up details.", style="Hint.TLabel").pack(side="left", padx=10)
 
-        ttk.Label(self, text="Account Balances", style="SubTitle.TLabel").pack(
+        ttk.Label(accounts_tab, text="Account Balances", style="SubTitle.TLabel").pack(
             anchor="w", pady=(18, 7), padx=4
         )
-        area = ttk.Frame(self)
+        area = ttk.Frame(accounts_tab)
         area.pack(fill="both", expand=True)
         self.tree = CrudPage.make_tree(
             self,
