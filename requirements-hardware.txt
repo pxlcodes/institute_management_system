@@ -1,0 +1,2 @@
+# Optional: install only when the corresponding hardware is enabled.
+pyzk>=0.9

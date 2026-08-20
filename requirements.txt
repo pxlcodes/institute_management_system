@@ -1,0 +1,5 @@
+mysql-connector-python>=9.0,<10
+reportlab>=4.0,<5
+nepali-datetime>=1.0.8,<2
+lxml>=5.0,<7
+Pillow>=10.0,<13
