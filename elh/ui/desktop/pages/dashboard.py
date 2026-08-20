@@ -25,6 +25,7 @@ class DashboardPage(BasePage):
             ("teachers", "Total Staff"),
             ("enrollments", "Active Enrollments"),
             ("student_present", "Students Present Today"),
+            ("attendance_alerts", "Attendance Alerts"),
             ("student_due", "Student Outstanding"),
             ("today_income", "Today's Income"),
             ("today_expense", "Today's Expense"),
@@ -59,6 +60,14 @@ class DashboardPage(BasePage):
             ],
         )
         self.present_tree.configure(height=5)
+
+        ttk.Label(self, text="Attendance Follow-up Alerts", style="SubTitle.TLabel").pack(anchor="w", pady=(18, 7), padx=4)
+        alert_area = ttk.Frame(self); alert_area.pack(fill="x")
+        self.alert_tree = CrudPage.make_tree(self, alert_area, [
+            ("student", "Student", 220), ("class", "Class", 90), ("last", "Last Attendance", 155),
+            ("consecutive", "No-Punch Days", 110), ("monthly", "Missing This Month", 130), ("reason", "Review Reason", 300),
+        ])
+        self.alert_tree.configure(height=5)
 
         ttk.Label(self, text="Account Balances", style="SubTitle.TLabel").pack(
             anchor="w", pady=(18, 7), padx=4
@@ -97,7 +106,9 @@ class DashboardPage(BasePage):
         self.cards["teachers"].config(text=str(metrics["teachers"]))
         self.cards["enrollments"].config(text=str(metrics["enrollments"]))
         present_students = self.app.services.attendance.students_present_today()
+        attendance_alerts = self.app.services.attendance.student_attendance_alerts()
         self.cards["student_present"].config(text=str(len(present_students)))
+        self.cards["attendance_alerts"].config(text=str(len(attendance_alerts)))
         self.cards["student_due"].config(text=money(metrics["student_due"]))
         self.cards["today_income"].config(text=money(float(metrics["today_income"]) + float(metrics["today_student"])))
         self.cards["today_expense"].config(text=money(metrics["today_expense"]))
@@ -118,6 +129,13 @@ class DashboardPage(BasePage):
                 ),
             )
 
+        self.alert_tree.delete(*self.alert_tree.get_children())
+        for row in attendance_alerts:
+            self.alert_tree.insert("", "end", values=(
+                row["student_name"], row["class_name"], self._attendance_date(row["last_seen"]),
+                row["consecutive_days"], row["monthly_missing_days"], row["reason"],
+            ))
+
         self.tree.delete(*self.tree.get_children())
         for row in accounts:
             self.tree.insert(
@@ -136,6 +154,12 @@ class DashboardPage(BasePage):
             return ""
         timestamp = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
         return timestamp.strftime("%H:%M:%S")
+
+    @staticmethod
+    def _attendance_date(value) -> str:
+        if not value: return "No attendance yet"
+        timestamp = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+        return timestamp.strftime("%Y-%m-%d %H:%M")
 
 
 # ---------------------------------------------------------------------------

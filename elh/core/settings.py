@@ -94,6 +94,22 @@ DEFAULT_SETTINGS = (
         "integer",
         "Maximum time for one SMS gateway request.",
     ),
+    (
+        "attendance_consecutive_absence_days",
+        "3",
+        "Attendance",
+        "Consecutive Absence Alert Days",
+        "integer",
+        "Flag an active enrolled student after this many calendar days since the last attendance punch.",
+    ),
+    (
+        "attendance_monthly_irregular_days",
+        "5",
+        "Attendance",
+        "Monthly Irregularity Alert Days",
+        "integer",
+        "Flag an active enrolled student when missing attendance days in the current Nepali month reach this number.",
+    ),
 )
 
 

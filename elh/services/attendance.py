@@ -9,6 +9,7 @@ import nepali_datetime as nepali
 from elh.core.validation import validate_month
 from elh.hardware.attendance.base import AttendanceDevice
 from elh.repositories import AttendanceRepository
+from elh.core.settings import SettingsService
 
 
 @dataclass(frozen=True)
@@ -32,9 +33,10 @@ class DeviceNameSyncResult:
 
 
 class AttendanceService:
-    def __init__(self, repository: AttendanceRepository, device: AttendanceDevice):
+    def __init__(self, repository: AttendanceRepository, device: AttendanceDevice, settings: SettingsService | None = None):
         self.repository = repository
         self.device = device
+        self.settings = settings
 
     def sync(self) -> AttendanceSyncResult:
         events = self.device.fetch_events()
@@ -204,6 +206,62 @@ class AttendanceService:
                 "hours": round(seconds / 3600, 2),
             })
         return totals
+
+    def student_attendance_alerts(self) -> list[dict]:
+        """Return review alerts for active enrolled students with attendance gaps.
+
+        These are calendar-day indicators; administrators should account for holidays and
+        approved leave before taking action.
+        """
+        consecutive_limit = max(1, self.settings.get_int("attendance_consecutive_absence_days", 3)) if self.settings else 3
+        monthly_limit = max(1, self.settings.get_int("attendance_monthly_irregular_days", 5)) if self.settings else 5
+        today_ad = datetime.now().date()
+        start_at, end_at, _ = self._month_range(nepali.date.today().strftime("%Y/%m"), "Attendance month")
+        monthly_punches: dict[int, set] = defaultdict(set)
+        for row in self.repository.student_logs(start_at, end_at):
+            occurred = row["occurred_at"] if isinstance(row["occurred_at"], datetime) else datetime.fromisoformat(str(row["occurred_at"]))
+            monthly_punches[int(row["person_id"])].add(occurred.date())
+        rows = self.repository.db.query(
+            "SELECT s.id,s.student_name,s.class_name,MIN(e.start_date) enrollment_start,MAX(l.occurred_at) last_seen "
+            "FROM students s JOIN enrollments e ON e.student_id=s.id AND e.status='Active' "
+            "LEFT JOIN attendance_logs l ON l.person_type='student' AND l.person_id=s.id "
+            "WHERE s.status='Active' GROUP BY s.id,s.student_name,s.class_name"
+        )
+        alerts = []
+        month_start_ad = datetime.fromisoformat(start_at).date()
+        for row in rows:
+            try:
+                start_value = str(row["enrollment_start"])
+                if "/" in start_value:
+                    start_parts = [int(value) for value in start_value.split("/")]
+                    enrollment_start = nepali.date(*start_parts).to_datetime_date()
+                else:
+                    enrollment_start = datetime.fromisoformat(start_value).date()
+            except Exception:
+                continue
+            if enrollment_start > today_ad:
+                continue
+            last_seen = row["last_seen"]
+            last_date = datetime.fromisoformat(str(last_seen)).date() if last_seen else None
+            anchor = max(enrollment_start, last_date) if last_date else enrollment_start
+            consecutive_days = max(0, (today_ad - anchor).days)
+            relevant_month_start = max(month_start_ad, enrollment_start)
+            expected_days = max(0, (today_ad - relevant_month_start).days + 1)
+            present_days = len(monthly_punches.get(int(row["id"]), set()))
+            missing_days = max(0, expected_days - present_days)
+            reasons = []
+            if consecutive_days >= consecutive_limit:
+                reasons.append(f"No punch for {consecutive_days} day(s)")
+            if missing_days >= monthly_limit:
+                reasons.append(f"{missing_days} missing day(s) this month")
+            if reasons:
+                alerts.append({
+                    "student_id": int(row["id"]), "student_name": row["student_name"],
+                    "class_name": row["class_name"] or "", "last_seen": last_seen,
+                    "consecutive_days": consecutive_days, "monthly_missing_days": missing_days,
+                    "reason": "; ".join(reasons),
+                })
+        return sorted(alerts, key=lambda row: (-row["consecutive_days"], -row["monthly_missing_days"], row["student_name"].casefold()))
 
     def students_present_today(self) -> list[dict]:
         now = datetime.now()

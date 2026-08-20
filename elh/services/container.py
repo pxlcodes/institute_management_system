@@ -74,7 +74,7 @@ class ServiceContainer:
             students=StudentService(StudentRepository(db), config.date_format, notifications),
             enrollments=EnrollmentService(db, notifications, config.date_format),
             notifications=notifications,
-            attendance=AttendanceService(AttendanceRepository(db), create_attendance_device(config)),
+            attendance=AttendanceService(AttendanceRepository(db), create_attendance_device(config), settings),
             printing=printing,
             billing=BillingService(BillingRepository(db),printing,company_name,currency_symbol,notifications),
             reports=ReportsService(db,company_name,currency_symbol,printing),
