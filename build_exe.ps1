@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$PythonPath = "python",
-    [switch]$SkipTests
+    [switch]$SkipTests,
+    [switch]$IncludeProductionConfig
 )
 
 $ErrorActionPreference = "Stop"
@@ -47,6 +48,12 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "The packaged EXE self-test failed." }
 
     Copy-Item -LiteralPath ".env.example" -Destination (Join-Path $distribution "environment.example") -Force
+    if ($IncludeProductionConfig) {
+        if (-not (Test-Path -LiteralPath ".env")) {
+            throw "Production configuration .env was not found."
+        }
+        Copy-Item -LiteralPath ".env" -Destination (Join-Path $distribution ".env") -Force
+    }
     Copy-Item -LiteralPath "README.md" -Destination (Join-Path $distribution "README.md") -Force
     $templateDirectory = Join-Path $distribution "templates"
     New-Item -ItemType Directory -Path $templateDirectory -Force | Out-Null
@@ -66,7 +73,8 @@ FIRST START
 3. Start ELH Management System.exe.
 4. Sign in, change required passwords, create and verify a database backup.
 
-Do not copy the developer's .env into a release archive.
+This package includes the current deployment .env: $IncludeProductionConfig
+Keep the ZIP private because the .env may contain database and SMS credentials.
 "@
     Set-Content -LiteralPath (Join-Path $distribution "BUILD_INFO.txt") -Value $buildInformation -Encoding UTF8
 

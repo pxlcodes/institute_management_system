@@ -26,6 +26,17 @@ release\ELH-Management-System-Windows-x64.zip.sha256
 Use `-SkipTests` only for diagnosing a packaging problem. A production release
 should always be built with the tests enabled.
 
+To create a private build for this already-configured production machine, include its
+current `.env` so the EXE uses the same MySQL database and device settings:
+
+```powershell
+.\build_exe.ps1 -PythonPath "C:\Users\Expert\AppData\Local\Python\pythoncore-3.14-64\python.exe" -IncludeProductionConfig
+```
+
+This copies configuration only. MySQL data stays on the server and is never copied,
+modified, or replaced by the build. Keep the resulting ZIP private because it contains
+database and SMS credentials.
+
 ## Deploy
 
 1. Extract the release ZIP to a writable folder such as
