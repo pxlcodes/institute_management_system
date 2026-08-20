@@ -28,6 +28,30 @@ class ReportsService:
         output=output or self._path(f"account_ledger_{start_date.replace('/','-')}_{end_date.replace('/','-')}.pdf")
         return self._build(output,"CENTRAL ACCOUNT LEDGER",start_date,end_date,["Date","Account","Type","Amount","Source","Particular","Reference"],data,["","","NET",self._money(incoming-outgoing),f"IN {self._money(incoming)}",f"OUT {self._money(outgoing)}",""])
 
+    def unregistered_attendance_pdf(self, output: Path | None = None) -> Path:
+        """Print device users who have attended but are not linked to a student/staff record."""
+        rows = self.db.query(
+            "SELECT base.device_user_id,COALESCE(u.device_name,'') device_name,COUNT(l.id) punches,"
+            "MIN(l.occurred_at) first_seen,MAX(l.occurred_at) last_seen "
+            "FROM (SELECT device_user_id FROM attendance_device_users UNION SELECT device_user_id FROM attendance_logs) base "
+            "LEFT JOIN attendance_device_users u ON u.device_user_id=base.device_user_id "
+            "JOIN attendance_logs l ON l.device_user_id=base.device_user_id "
+            "LEFT JOIN device_user_mappings m ON m.device_user_id=base.device_user_id AND m.status='Active' "
+            "WHERE m.id IS NULL GROUP BY base.device_user_id,u.device_name ORDER BY last_seen DESC"
+        )
+        data = [[r["device_user_id"], r["device_name"], r["punches"], str(r["first_seen"]), str(r["last_seen"])] for r in rows]
+        return self._build(output or self._path("attendance_unregistered_device_users.pdf"), "ATTENDING DEVICE USERS NOT REGISTERED IN ELH", "All records", "Current", ["Device ID", "Name on Device", "Punches", "First Punch", "Last Punch"], data, ["", "TOTAL UNREGISTERED", str(len(rows)), "", ""])
+
+    def student_register_pdf(self, output: Path | None = None) -> Path:
+        rows = self.db.query("SELECT s.id,s.student_name,s.class_name,COALESCE(sc.school_name,'') school_name,s.contact,s.joining_date,s.status FROM students s LEFT JOIN schools sc ON sc.id=s.school_id ORDER BY s.student_name")
+        data = [[r["id"],r["student_name"],r["class_name"] or "",r["school_name"],r["contact"] or "",r["joining_date"],r["status"]] for r in rows]
+        return self._build(output or self._path("student_register.pdf"), "STUDENT REGISTER", "All records", "Current", ["ID","Student","Class","School","Contact","Joining","Status"], data, ["","TOTAL STUDENTS",str(len(rows)),"","","",""])
+
+    def staff_register_pdf(self, output: Path | None = None) -> Path:
+        rows = self.db.query("SELECT id,teacher_name,staff_type,contact,subject,joined_date,status FROM teachers ORDER BY teacher_name")
+        data = [[r["id"],r["teacher_name"],r["staff_type"],r["contact"] or "",r["subject"] or "",r["joined_date"],r["status"]] for r in rows]
+        return self._build(output or self._path("staff_register.pdf"), "STAFF REGISTER", "All records", "Current", ["ID","Staff","Type","Contact","Subject","Joined","Status"], data, ["","TOTAL STAFF",str(len(rows)),"","","",""])
+
     def payment_proof(self,kind:str,record_id:int):
         if kind=="student":
             r=self.db.query_one("SELECT st.*,s.student_name person_name,COALESCE(a.account_name,'') account_name FROM student_transactions st JOIN students s ON s.id=st.student_id LEFT JOIN accounts a ON a.id=st.account_id WHERE st.id=?",(record_id,))
@@ -107,7 +131,10 @@ class ReportsService:
         details += [v for v in (profile.get("address"),profile.get("phone"),profile.get("email"),profile.get("website")) if v]
         story=[Paragraph(profile.get("company_name") or self.app_title,heading),Paragraph(" | ".join(details),sub),Spacer(1,4*mm),Paragraph(title,ParagraphStyle("Report",parent=styles["Heading2"],alignment=1,textColor=colors.HexColor("#008F7A"))),Paragraph(f"Period: {start_date} to {end_date} (BS)",sub),Spacer(1,5*mm)]
         table_data=[headers,*rows,total_row]
-        widths=[25,42,24,27,37,82,35] if "LEDGER" in title else [25,42,75,27,27,48,32]
+        if len(headers) == 7:
+            widths=[25,42,24,27,37,82,35] if "LEDGER" in title else [25,42,75,27,27,48,32]
+        else:
+            widths=[277 / len(headers)] * len(headers)
         table=Table(table_data,colWidths=[w*mm for w in widths],repeatRows=1)
         table.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#183B56")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("BACKGROUND",(0,-1),(-1,-1),colors.HexColor("#DDF4EF")),("FONTNAME",(0,-1),(-1,-1),"Helvetica-Bold"),("GRID",(0,0),(-1,-1),0.35,colors.HexColor("#CBD5E1")),("ROWBACKGROUNDS",(0,1),(-1,-2),[colors.white,colors.HexColor("#F7FAFC")]),("FONTSIZE",(0,0),(-1,-1),7.5),("VALIGN",(0,0),(-1,-1),"TOP"),("ALIGN",(3,1),(4,-1),"RIGHT"),("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5)]))
         story.append(table);SimpleDocTemplate(str(output),pagesize=landscape(A4),leftMargin=10*mm,rightMargin=10*mm,topMargin=10*mm,bottomMargin=14*mm,title=title).build(story,onFirstPage=page,onLaterPages=page);return output

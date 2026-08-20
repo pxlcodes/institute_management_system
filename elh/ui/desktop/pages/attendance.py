@@ -78,6 +78,7 @@ class AttendancePage(CrudPage):
 
         map_area = ttk.Frame(mapping_tab)
         map_area.pack(fill="both", expand=True)
+        self.unregistered_note = ttk.Label(mapping_tab, style="Hint.TLabel")
         self.mapping_tree = self.make_tree(
             map_area,
             [
@@ -97,6 +98,7 @@ class AttendancePage(CrudPage):
             text="Double-click a device user to map or change its linked Student/Staff record.",
             style="Hint.TLabel",
         ).pack(anchor="w", pady=(6, 0))
+        self.unregistered_note.pack(anchor="w", pady=(3, 0))
 
         log_area = ttk.Frame(logs_tab)
         log_area.pack(fill="both", expand=True)
@@ -342,6 +344,10 @@ class AttendancePage(CrudPage):
         self.load_people()
         self.clear_tree(self.mapping_tree)
         rows = self.app.services.attendance.repository.device_users()
+        unregistered = [row for row in rows if row["status"] == "Unmapped" and int(row["log_count"] or 0) > 0]
+        self.unregistered_note.configure(
+            text=f"{len(unregistered)} attending device user(s) are not registered or mapped. See Reports → Attendance Reconciliation to print the follow-up list."
+        )
         for row in rows:
             self.mapping_tree.insert(
                 "",
