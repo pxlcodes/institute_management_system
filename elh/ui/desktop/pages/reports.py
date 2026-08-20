@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os
 import tkinter as tk
+import nepali_datetime as nepali
 from pathlib import Path
 from tkinter import messagebox,ttk
 from elh.ui.desktop.components import BasePage,FormBuilder
@@ -11,7 +12,7 @@ class ReportsPage(BasePage):
     def __init__(self,parent,app):
         super().__init__(parent,app)
         ttk.Label(self,text="Reports & Printing",style="Title.TLabel").pack(anchor="w")
-        ttk.Label(self,text="Generate properly headed PDF reports using your saved company and PAN details.").pack(anchor="w",pady=(2,14))
+        ttk.Label(self,text="Generate properly headed PDF reports using your saved company and PAN details. The selected period is applied to finance and attendance reports; registers are current snapshots.").pack(anchor="w",pady=(2,14))
         card=ttk.LabelFrame(self,text="Report Period (Nepali BS)",padding=18);card.pack(fill="x")
         self.start=tk.StringVar(value=today_iso());self.end=tk.StringVar(value=today_iso());fb=FormBuilder(card);fb.entry("Start Date *",self.start);fb.entry("End Date *",self.end)
         tabs=ttk.Notebook(self);tabs.pack(fill="both",expand=True,pady=16)
@@ -31,6 +32,11 @@ class ReportsPage(BasePage):
             start=validate_date(self.start.get(),"Start date");end=validate_date(self.end.get(),"End date")
             if end<start:raise ValueError("End date cannot be earlier than start date.")
             service=self.app.services.reports
-            path=(service.paid_transactions_pdf(start,end) if kind=="paid" else service.ledger_pdf(start,end) if kind=="ledger" else service.student_register_pdf() if kind=="students" else service.staff_register_pdf() if kind=="staff" else service.unregistered_attendance_pdf())
+            if kind == "unregistered":
+                start_at = nepali.date(*map(int, start.split("/"))).to_datetime_date().isoformat() + " 00:00:00"
+                end_at = nepali.date(*map(int, end.split("/"))).to_datetime_date().isoformat() + " 23:59:59"
+                path = service.unregistered_attendance_pdf(start_at, end_at, start, end)
+            else:
+                path=(service.paid_transactions_pdf(start,end) if kind=="paid" else service.ledger_pdf(start,end) if kind=="ledger" else service.student_register_pdf() if kind=="students" else service.staff_register_pdf())
             os.startfile(Path(path),"print" if print_now else "open")
         except Exception as exc:messagebox.showerror("Report Error",str(exc),parent=self)

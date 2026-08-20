@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from decimal import Decimal
 from elh.config import ROOT_DIR
+from elh.core.validation import today_iso
 from elh.models import Receipt,ReceiptLine
 
 
@@ -28,7 +29,7 @@ class ReportsService:
         output=output or self._path(f"account_ledger_{start_date.replace('/','-')}_{end_date.replace('/','-')}.pdf")
         return self._build(output,"CENTRAL ACCOUNT LEDGER",start_date,end_date,["Date","Account","Type","Amount","Source","Particular","Reference"],data,["","","NET",self._money(incoming-outgoing),f"IN {self._money(incoming)}",f"OUT {self._money(outgoing)}",""])
 
-    def unregistered_attendance_pdf(self, output: Path | None = None) -> Path:
+    def unregistered_attendance_pdf(self, start_at: str, end_at: str, start_date: str, end_date: str, output: Path | None = None) -> Path:
         """Print device users who have attended but are not linked to a student/staff record."""
         rows = self.db.query(
             "SELECT base.device_user_id,COALESCE(u.device_name,'') device_name,COUNT(l.id) punches,"
@@ -37,10 +38,12 @@ class ReportsService:
             "LEFT JOIN attendance_device_users u ON u.device_user_id=base.device_user_id "
             "JOIN attendance_logs l ON l.device_user_id=base.device_user_id "
             "LEFT JOIN device_user_mappings m ON m.device_user_id=base.device_user_id AND m.status='Active' "
-            "WHERE m.id IS NULL GROUP BY base.device_user_id,u.device_name ORDER BY last_seen DESC"
+            "WHERE m.id IS NULL AND l.occurred_at BETWEEN ? AND ? "
+            "GROUP BY base.device_user_id,u.device_name ORDER BY last_seen DESC",
+            (start_at, end_at),
         )
         data = [[r["device_user_id"], r["device_name"], r["punches"], str(r["first_seen"]), str(r["last_seen"])] for r in rows]
-        return self._build(output or self._path("attendance_unregistered_device_users.pdf"), "ATTENDING DEVICE USERS NOT REGISTERED IN ELH", "All records", "Current", ["Device ID", "Name on Device", "Punches", "First Punch", "Last Punch"], data, ["", "TOTAL UNREGISTERED", str(len(rows)), "", ""])
+        return self._build(output or self._path(f"attendance_unregistered_{start_date.replace('/','-')}_{end_date.replace('/','-')}.pdf"), "ATTENDING DEVICE USERS NOT REGISTERED IN ELH", start_date, end_date, ["Device ID", "Name on Device", "Punches", "First Punch", "Last Punch"], data, ["", "TOTAL UNREGISTERED", str(len(rows)), "", ""])
 
     def student_register_pdf(self, output: Path | None = None) -> Path:
         rows = self.db.query("SELECT s.id,s.student_name,s.class_name,COALESCE(sc.school_name,'') school_name,s.contact,s.joining_date,s.status FROM students s LEFT JOIN schools sc ON sc.id=s.school_id ORDER BY s.student_name")
@@ -129,7 +132,7 @@ class ReportsService:
         if profile.get("pan_number"):details.append(f"PAN: {profile['pan_number']}")
         if profile.get("registration_number"):details.append(f"Reg. No: {profile['registration_number']}")
         details += [v for v in (profile.get("address"),profile.get("phone"),profile.get("email"),profile.get("website")) if v]
-        story=[Paragraph(profile.get("company_name") or self.app_title,heading),Paragraph(" | ".join(details),sub),Spacer(1,4*mm),Paragraph(title,ParagraphStyle("Report",parent=styles["Heading2"],alignment=1,textColor=colors.HexColor("#008F7A"))),Paragraph(f"Period: {start_date} to {end_date} (BS)",sub),Spacer(1,5*mm)]
+        story=[Paragraph(profile.get("company_name") or self.app_title,heading),Paragraph(" | ".join(details),sub),Spacer(1,4*mm),Paragraph(title,ParagraphStyle("Report",parent=styles["Heading2"],alignment=1,textColor=colors.HexColor("#008F7A"))),Paragraph(f"Period: {start_date} to {end_date} (BS)  |  Printed: {today_iso()} (BS)",sub),Spacer(1,5*mm)]
         table_data=[headers,*rows,total_row]
         if len(headers) == 7:
             widths=[25,42,24,27,37,82,35] if "LEDGER" in title else [25,42,75,27,27,48,32]
