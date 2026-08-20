@@ -35,26 +35,40 @@ class DashboardPage(BasePage):
         ]
         for idx, (key, title) in enumerate(labels):
             card = ttk.Frame(grid, style="DashboardCard.TFrame", padding=(16, 13))
-            card.grid(row=idx // 4, column=idx % 4, padx=6, pady=6, sticky="nsew")
+            card.grid(row=idx // 5, column=idx % 5, padx=6, pady=6, sticky="nsew")
             ttk.Label(card,text=title,style="DashboardCardTitle.TLabel").pack(anchor="w")
             value = ttk.Label(card, text="0", style="DashboardCardValue.TLabel")
             value.pack(anchor="w",pady=(7,0))
             self.cards[key] = value
 
-        for i in range(4):
+        for i in range(5):
             grid.columnconfigure(i, weight=1)
 
         dashboard_tabs = ttk.Notebook(self)
         dashboard_tabs.pack(fill="both", expand=True, pady=(12, 0))
         attendance_tab = ttk.Frame(dashboard_tabs, padding=4)
+        present_tab = ttk.Frame(dashboard_tabs, padding=4)
         accounts_tab = ttk.Frame(dashboard_tabs, padding=4)
         dashboard_tabs.add(attendance_tab, text="Attendance & Follow-up")
+        dashboard_tabs.add(present_tab, text="Students Present Today")
         dashboard_tabs.add(accounts_tab, text="Account Balances")
 
-        ttk.Label(attendance_tab, text="Students Present Today", style="SubTitle.TLabel").pack(
-            anchor="w", pady=(14, 7), padx=4
+        ttk.Label(attendance_tab, text="Attendance Follow-up Alerts", style="SubTitle.TLabel").pack(anchor="w", pady=(8, 7), padx=4)
+        alert_area = ttk.Frame(attendance_tab); alert_area.pack(fill="both", expand=True)
+        self.alert_tree = CrudPage.make_tree(self, alert_area, [
+            ("student", "Student", 220), ("class", "Class", 90), ("last", "Last Attendance", 155),
+            ("consecutive", "No-Punch Days", 110), ("monthly", "Missing This Month", 130), ("review", "Review Status", 130), ("reason", "Review Reason", 300),
+        ])
+        self.alert_tree.configure(height=8)
+        self.alert_tree.bind("<Double-1>", self.review_selected_alert)
+        alert_actions = ttk.Frame(attendance_tab, style="Toolbar.TFrame", padding=(8, 4)); alert_actions.pack(fill="x")
+        ttk.Button(alert_actions, text="Review Selected Alert", style="Accent.TButton", command=self.review_selected_alert).pack(side="left")
+        ttk.Label(alert_actions, text="Select an alert and press review, or double-click it.", style="Hint.TLabel").pack(side="left", padx=10)
+
+        ttk.Label(present_tab, text="Students Present Today", style="SubTitle.TLabel").pack(
+            anchor="w", pady=(8, 7), padx=4
         )
-        present_area = ttk.Frame(attendance_tab)
+        present_area = ttk.Frame(present_tab)
         present_area.pack(fill="x")
         self.present_tree = CrudPage.make_tree(
             self,
@@ -67,19 +81,7 @@ class DashboardPage(BasePage):
                 ("last", "Last Punch", 170),
             ],
         )
-        self.present_tree.configure(height=4)
-
-        ttk.Label(attendance_tab, text="Attendance Follow-up Alerts", style="SubTitle.TLabel").pack(anchor="w", pady=(14, 7), padx=4)
-        alert_area = ttk.Frame(attendance_tab); alert_area.pack(fill="both", expand=True)
-        self.alert_tree = CrudPage.make_tree(self, alert_area, [
-            ("student", "Student", 220), ("class", "Class", 90), ("last", "Last Attendance", 155),
-            ("consecutive", "No-Punch Days", 110), ("monthly", "Missing This Month", 130), ("review", "Review Status", 130), ("reason", "Review Reason", 300),
-        ])
-        self.alert_tree.configure(height=7)
-        self.alert_tree.bind("<Double-1>", self.review_selected_alert)
-        alert_actions = ttk.Frame(attendance_tab, style="Toolbar.TFrame", padding=(8, 4)); alert_actions.pack(fill="x")
-        ttk.Button(alert_actions, text="Review Selected Alert", style="Accent.TButton", command=self.review_selected_alert).pack(side="left")
-        ttk.Label(alert_actions, text="Double-click an alert to record contact, leave, or follow-up details.", style="Hint.TLabel").pack(side="left", padx=10)
+        self.present_tree.configure(height=9)
 
         ttk.Label(accounts_tab, text="Account Balances", style="SubTitle.TLabel").pack(
             anchor="w", pady=(18, 7), padx=4
