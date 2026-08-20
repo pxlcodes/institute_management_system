@@ -24,6 +24,13 @@ class DeviceUserSyncResult:
     stored: int
 
 
+@dataclass(frozen=True)
+class DeviceNameSyncResult:
+    registered: int
+    updated: int
+    missing: int
+
+
 class AttendanceService:
     def __init__(self, repository: AttendanceRepository, device: AttendanceDevice):
         self.repository = repository
@@ -44,6 +51,13 @@ class AttendanceService:
         users = self.device.fetch_users()
         stored = self.repository.save_device_users(users)
         return DeviceUserSyncResult(received=len(users), stored=stored)
+
+    def sync_registered_names_to_device(self) -> DeviceNameSyncResult:
+        names = self.repository.registered_device_names()
+        updated, missing = self.device.sync_user_names(names)
+        # Re-read the device directory so the local cache reflects the actual device state.
+        self.repository.save_device_users(self.device.fetch_users())
+        return DeviceNameSyncResult(registered=len(names), updated=updated, missing=missing)
 
     def map_device_user(
         self,

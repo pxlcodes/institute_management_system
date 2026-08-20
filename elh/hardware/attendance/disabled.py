@@ -5,6 +5,9 @@ class DisabledAttendanceDevice:
     def fetch_users(self):
         return []
 
+    def sync_user_names(self, names):
+        return 0, len(names)
+
     def health(self) -> tuple[bool, str]:
         return True, "Attendance integration disabled"
 
@@ -17,6 +20,9 @@ class UnavailableAttendanceDevice:
         raise RuntimeError(self.reason)
 
     def fetch_users(self):
+        raise RuntimeError(self.reason)
+
+    def sync_user_names(self, names):
         raise RuntimeError(self.reason)
 
     def health(self) -> tuple[bool, str]:

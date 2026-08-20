@@ -189,6 +189,16 @@ class AttendanceRepository:
                      COALESCE(u.device_name,''),base.device_user_id
         """)
 
+    def registered_device_names(self) -> dict[str, str]:
+        rows = self.db.query(
+            "SELECT m.device_user_id,COALESCE(t.teacher_name,s.student_name,'') registered_name "
+            "FROM device_user_mappings m "
+            "LEFT JOIN teachers t ON m.person_type='teacher' AND t.id=m.person_id "
+            "LEFT JOIN students s ON m.person_type='student' AND s.id=m.person_id "
+            "WHERE m.status='Active' ORDER BY m.device_user_id"
+        )
+        return {str(row["device_user_id"]): str(row["registered_name"]).strip() for row in rows if str(row["registered_name"]).strip()}
+
     def mappings(self):
         return self.db.query("""
             SELECT m.*,COALESCE(t.teacher_name,s.student_name,'') person_name

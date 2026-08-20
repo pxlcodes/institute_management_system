@@ -102,6 +102,43 @@ class ZKTecoAttendanceDevice:
             if connection is not None:
                 self._close_connection(connection)
 
+    def sync_user_names(self, names: dict[str, str]) -> tuple[int, int]:
+        """Update only names for existing device users, preserving credentials and cards."""
+        connection = None
+        try:
+            connection = self._client().connect()
+            existing = {str(user.user_id): user for user in (connection.get_users() or [])}
+            updated = missing = 0
+            try:
+                connection.disable_device()
+            except Exception:
+                pass
+            for device_user_id, registered_name in names.items():
+                user = existing.get(str(device_user_id))
+                if user is None:
+                    missing += 1
+                    continue
+                # ZKTeco's legacy packet permits 24 encoded bytes for the display name.
+                name = str(registered_name).strip().encode("utf-8")[:24].decode("utf-8", errors="ignore")
+                connection.set_user(
+                    uid=user.uid, name=name, privilege=user.privilege,
+                    password=user.password, group_id=user.group_id,
+                    user_id=user.user_id, card=user.card,
+                )
+                updated += 1
+            try:
+                connection.enable_device()
+            except Exception:
+                pass
+            return updated, missing
+        except AttendanceDeviceError:
+            raise
+        except Exception as exc:
+            raise AttendanceDeviceError(f"Cannot update ZKTeco user names at {self.host}:{self.port}: {exc}") from exc
+        finally:
+            if connection is not None:
+                self._close_connection(connection)
+
     def health(self) -> tuple[bool, str]:
         connection = None
         try:

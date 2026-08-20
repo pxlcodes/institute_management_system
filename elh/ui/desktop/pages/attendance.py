@@ -61,6 +61,12 @@ class AttendancePage(CrudPage):
             command=self.sync_device,
         )
         self.punch_sync_button.pack(side="left", padx=4)
+        self.name_sync_button = ttk.Button(
+            self.page_toolbar,
+            text="Sync Registered Names to Device",
+            command=self.sync_registered_names,
+        )
+        self.name_sync_button.pack(side="left", padx=4)
         ttk.Button(self.page_toolbar, text="Refresh", command=self.refresh).pack(
             side="left", padx=4
         )
@@ -257,6 +263,33 @@ class AttendancePage(CrudPage):
         state = "normal" if enabled else "disabled"
         self.user_sync_button.configure(state=state)
         self.punch_sync_button.configure(state=state)
+        self.name_sync_button.configure(state=state)
+
+    def sync_registered_names(self):
+        if not messagebox.askyesno(
+            "Sync Names to Device",
+            "Update the ZKTeco display name for every active mapped Student/Staff user?\n\n"
+            "Device IDs, cards, passwords, fingerprints, and attendance history will not be changed.",
+            parent=self,
+        ):
+            return
+        self._set_device_buttons(False)
+        self.name_sync_button.configure(text="Syncing Names...")
+        def work():
+            try:
+                result = self.app.services.attendance.sync_registered_names_to_device(); error = None
+            except Exception as exc:
+                result = None; error = exc
+            self.after(0, lambda: self.names_finished(result, error))
+        threading.Thread(target=work, daemon=True).start()
+
+    def names_finished(self, result, error):
+        self._set_device_buttons(True)
+        self.name_sync_button.configure(text="Sync Registered Names to Device")
+        if error:
+            messagebox.showerror("Sync Names", str(error), parent=self); return
+        self.refresh()
+        messagebox.showinfo("Sync Names", f"Registered users checked: {result.registered}\nNames updated on device: {result.updated}\nMissing from device: {result.missing}", parent=self)
 
     def fetch_device_users(self):
         self._set_device_buttons(False)
