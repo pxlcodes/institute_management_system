@@ -454,6 +454,27 @@ class ServiceTests(unittest.TestCase):
             )
             self.assertTrue(certificate_id)
 
+    def test_manual_absence_sms_is_logged_and_sent(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = SQLiteDatabase(Path(folder) / "absence-sms.db", False)
+            student_id = db.execute(
+                "INSERT INTO students (student_name,contact,joining_date,status) VALUES (?,?,?,?)",
+                ("Absent SMS Student", "9800000003", "2083/05/01", "Active"),
+            )
+            notifications = NotificationService(db, replace(AppConfig(), aakash_sms_token="a-token"))
+            SettingsService(db).set("sms_provider", "aakash")
+
+            class ManualProvider:
+                def send(self, _recipient, _message):
+                    return SmsProviderResponse(True, "200", "queued")
+
+            with patch("elh.services.notifications.create_sms_provider", return_value=ManualProvider()):
+                log_id = notifications.queue_absence_sms(student_id, "2083/05/02", asynchronous=False)
+            log = db.query_one("SELECT * FROM sms_delivery_log WHERE id=?", (log_id,))
+            self.assertEqual(log["event_key"], "attendance_absence")
+            self.assertEqual(log["status"], "Sent")
+            self.assertIn("2083/05/02", log["message_text"])
+
     def test_sms_outbox_templates_and_both_provider_adapters(self):
         with tempfile.TemporaryDirectory() as folder:
             db = SQLiteDatabase(Path(folder) / "sms-outbox.db", False)

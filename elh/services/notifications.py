@@ -39,6 +39,11 @@ SMS_EVENT_TEMPLATES = (
         "Certificate Issued",
         "Dear {student_name}, certificate {certificate_number} for {course_name} was issued on {certificate_date}. {company_name}",
     ),
+    (
+        "attendance_absence",
+        "Student Absence Alert",
+        "Dear Parent/Guardian, {student_name} has not recorded attendance on {attendance_date}. Please contact {company_name} if this is due to leave or an attendance issue.",
+    ),
 )
 
 COMMON_TEMPLATE_FIELDS = {
@@ -77,6 +82,7 @@ SMS_EVENT_FIELDS = {
         "certificate_number",
         "certificate_date",
     },
+    "attendance_absence": COMMON_TEMPLATE_FIELDS | {"student_name", "attendance_date"},
 }
 
 
@@ -463,6 +469,56 @@ class NotificationService:
         else:
             self.dispatch(log_id)
         return log_id
+
+    def absence_sms_details(self, student_id: int, attendance_date: str) -> dict[str, str]:
+        """Prepare the dashboard's manual absence alert without sending it yet."""
+        student = self.db.query_one(
+            "SELECT student_name,contact FROM students WHERE id=?", (student_id,)
+        )
+        if not student:
+            raise ValueError("Student was not found.")
+        template = self.db.query_one(
+            "SELECT template_text FROM sms_event_templates WHERE event_key='attendance_absence'"
+        )
+        if not template:
+            raise ValueError("The attendance absence SMS template was not found.")
+        return {
+            "student_name": str(student["student_name"]),
+            "contact": str(student["contact"] or ""),
+            "message": self.render(
+                template["template_text"],
+                {**self.company_context(), "student_name": student["student_name"], "attendance_date": attendance_date},
+            ),
+        }
+
+    def queue_absence_sms(
+        self, student_id: int, attendance_date: str, recipient: str = "", *, asynchronous: bool = True
+    ) -> int:
+        """Queue a manual attendance-absence SMS and retain it in the delivery log."""
+        details = self.absence_sms_details(student_id, attendance_date)
+        provider = self.validate_provider_configuration()
+        clean_recipient = self.normalize_recipient(recipient or details["contact"])
+        for _attempt in range(5):
+            try:
+                log_id = self.db.execute(
+                    "INSERT INTO sms_delivery_log "
+                    "(event_key,entity_type,entity_id,recipient,message_text,provider,status) "
+                    "VALUES ('attendance_absence','manual_student_absence',?,?,?,?, 'Pending')",
+                    (
+                        secrets.randbelow(2_000_000_000) + 1,
+                        clean_recipient,
+                        details["message"],
+                        provider,
+                    ),
+                )
+                if asynchronous:
+                    self.dispatch_async()
+                else:
+                    self.dispatch(log_id)
+                return log_id
+            except sqlite3.IntegrityError:
+                continue
+        raise RuntimeError("Could not allocate an absence SMS delivery record.")
 
     def send_test(self, recipient: str, message: str) -> int:
         clean_recipient = self.normalize_recipient(recipient)

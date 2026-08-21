@@ -19,6 +19,7 @@ class DashboardPage(BasePage):
         super().__init__(parent, app)
         self.cards = {}
         self.attendance_alerts_by_student = {}
+        self.absent_students_by_student = {}
         grid = ttk.Frame(self)
         grid.pack(fill="x", pady=(8, 4))
         labels = [
@@ -105,6 +106,17 @@ class DashboardPage(BasePage):
             ],
         )
         self.absent_tree.configure(height=8)
+        self.absent_tree.bind("<Double-1>", self.send_selected_absence_sms)
+        absent_actions = ttk.Frame(absent_tab, style="Toolbar.TFrame", padding=(8, 4))
+        absent_actions.pack(fill="x")
+        ttk.Button(
+            absent_actions, text="SMS Selected Absent Student", style="Accent.TButton",
+            command=self.send_selected_absence_sms,
+        ).pack(side="left")
+        ttk.Label(
+            absent_actions, text="Select a student and send an absence alert, or double-click the row.",
+            style="Hint.TLabel",
+        ).pack(side="left", padx=10)
 
         ttk.Label(accounts_tab, text="Account Balances", style="SubTitle.TLabel").pack(
             anchor="w", pady=(18, 7), padx=4
@@ -146,6 +158,7 @@ class DashboardPage(BasePage):
         absent_students = self.app.services.attendance.students_absent_today()
         attendance_alerts = self.app.services.attendance.student_attendance_alerts()
         self.attendance_alerts_by_student = {int(row["student_id"]): row for row in attendance_alerts}
+        self.absent_students_by_student = {int(row["id"]): row for row in absent_students}
         self.cards["student_present"].config(text=str(len(present_students)))
         self.cards["attendance_alerts"].config(text=str(len(attendance_alerts)))
         self.cards["student_due"].config(text=money(metrics["student_due"]))
@@ -171,7 +184,7 @@ class DashboardPage(BasePage):
         self.absent_tree.delete(*self.absent_tree.get_children())
         for row in absent_students:
             self.absent_tree.insert(
-                "", "end", values=(
+                "", "end", iid=f"absent-{row['id']}", values=(
                     row["student_name"], row["class_name"] or "", row["courses"] or "",
                     row["contact"] or "", self._attendance_date(row["last_seen"]),
                     row["device_status"],
@@ -245,6 +258,55 @@ class DashboardPage(BasePage):
             except Exception as exc:
                 messagebox.showerror("Attendance Review", str(exc), parent=dialog)
         ttk.Button(shell, text="Save Review", style="Accent.TButton", command=save_review).pack(anchor="e", pady=(12, 0))
+
+    def send_selected_absence_sms(self, _event=None):
+        selected = self.absent_tree.selection()
+        if not selected:
+            messagebox.showinfo("Absence SMS", "Select an absent student first.", parent=self)
+            return
+        try:
+            student_id = int(str(selected[0]).removeprefix("absent-"))
+        except ValueError:
+            return
+        if student_id not in self.absent_students_by_student:
+            messagebox.showerror("Absence SMS", "Refresh the dashboard and select the student again.", parent=self)
+            return
+        absence_date = today_iso()
+        try:
+            details = self.app.services.notifications.absence_sms_details(student_id, absence_date)
+        except Exception as exc:
+            self.show_error(exc)
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("Send Absence SMS")
+        dialog.transient(self.winfo_toplevel())
+        shell = ttk.Frame(dialog, padding=14, style="Form.TFrame")
+        shell.pack(fill="both", expand=True)
+        ttk.Label(shell, text=f"Absence SMS — {details['student_name']}", style="SubTitle.TLabel").pack(anchor="w")
+        ttk.Label(shell, text=f"Absent date: {absence_date}", style="Hint.TLabel").pack(anchor="w", pady=(0, 10))
+        recipient = tk.StringVar(value=details["contact"])
+        recipient_row = ttk.Frame(shell, style="Form.TFrame"); recipient_row.pack(fill="x", pady=(0, 8))
+        ttk.Label(recipient_row, text="Mobile Number").pack(side="left")
+        ttk.Entry(recipient_row, textvariable=recipient, width=25).pack(side="left", padx=10)
+        ttk.Label(shell, text="Message Preview", style="FormValue.TLabel").pack(anchor="w")
+        ttk.Label(shell, text=details["message"], style="Hint.TLabel", justify="left", wraplength=520).pack(anchor="w", pady=(2, 12))
+        actions = ttk.Frame(shell, style="Form.TFrame"); actions.pack(fill="x")
+        ttk.Button(actions, text="Cancel", command=dialog.destroy).pack(side="right", padx=3)
+
+        def queue_sms():
+            try:
+                self.app.services.notifications.queue_absence_sms(student_id, absence_date, recipient.get())
+                dialog.destroy()
+                messagebox.showinfo(
+                    "Absence SMS Queued",
+                    "The absence alert was queued. Check SMS & Notifications for its delivery result.",
+                    parent=self,
+                )
+            except Exception as exc:
+                messagebox.showerror("Absence SMS", str(exc), parent=dialog)
+
+        ttk.Button(actions, text="Queue SMS", style="Accent.TButton", command=queue_sms).pack(side="right", padx=3)
+        dialog.grab_set()
 
 
 # ---------------------------------------------------------------------------
