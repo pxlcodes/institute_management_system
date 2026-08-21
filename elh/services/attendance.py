@@ -295,6 +295,31 @@ class AttendanceService:
             f"{now.date().isoformat()} 23:59:59",
         )
 
+    def students_absent_today(self) -> list[dict]:
+        """Active enrollments that have no attendance punch today.
+
+        Enrollments beginning in the future are omitted, regardless of whether their
+        stored business date is Nepali BS or ISO/AD.
+        """
+        today_ad = datetime.now().date()
+        rows = self.repository.students_absent(
+            f"{today_ad.isoformat()} 00:00:00",
+            f"{today_ad.isoformat()} 23:59:59",
+        )
+        absent = []
+        for row in rows:
+            try:
+                value = str(row["enrollment_start"])
+                if "/" in value:
+                    started = nepali.date(*(int(part) for part in value.split("/"))).to_datetime_date()
+                else:
+                    started = datetime.fromisoformat(value).date()
+            except Exception:
+                continue
+            if started <= today_ad:
+                absent.append(row)
+        return absent
+
     def students_with_attendance(self) -> list[dict]:
         """Return active students with at least one imported attendance punch."""
         return self.repository.students_with_attendance()

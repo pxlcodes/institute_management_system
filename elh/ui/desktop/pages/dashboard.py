@@ -48,9 +48,11 @@ class DashboardPage(BasePage):
         dashboard_tabs.pack(fill="both", expand=True, pady=(12, 0))
         attendance_tab = ttk.Frame(dashboard_tabs, padding=4)
         present_tab = ttk.Frame(dashboard_tabs, padding=4)
+        absent_tab = ttk.Frame(dashboard_tabs, padding=4)
         accounts_tab = ttk.Frame(dashboard_tabs, padding=4)
         dashboard_tabs.add(attendance_tab, text="Attendance & Follow-up")
         dashboard_tabs.add(present_tab, text="Students Present Today")
+        dashboard_tabs.add(absent_tab, text="Students Absent Today")
         dashboard_tabs.add(accounts_tab, text="Account Balances")
 
         ttk.Label(attendance_tab, text="Attendance Follow-up Alerts", style="SubTitle.TLabel").pack(anchor="w", pady=(8, 7), padx=4)
@@ -82,6 +84,27 @@ class DashboardPage(BasePage):
             ],
         )
         self.present_tree.configure(height=9)
+
+        ttk.Label(absent_tab, text="Students Absent Today", style="SubTitle.TLabel").pack(
+            anchor="w", pady=(8, 2), padx=4
+        )
+        ttk.Label(
+            absent_tab,
+            text="Active enrolled students with no attendance punch today. “Not linked” means no attendance-device user is attached.",
+            style="Hint.TLabel",
+        ).pack(anchor="w", pady=(0, 7), padx=4)
+        absent_area = ttk.Frame(absent_tab)
+        absent_area.pack(fill="x")
+        self.absent_tree = CrudPage.make_tree(
+            self,
+            absent_area,
+            [
+                ("name", "Student", 220), ("class", "Class", 90), ("courses", "Course(s)", 220),
+                ("contact", "Contact", 125), ("last", "Last Attendance", 155),
+                ("device", "Device", 110),
+            ],
+        )
+        self.absent_tree.configure(height=8)
 
         ttk.Label(accounts_tab, text="Account Balances", style="SubTitle.TLabel").pack(
             anchor="w", pady=(18, 7), padx=4
@@ -120,6 +143,7 @@ class DashboardPage(BasePage):
         self.cards["teachers"].config(text=str(metrics["teachers"]))
         self.cards["enrollments"].config(text=str(metrics["enrollments"]))
         present_students = self.app.services.attendance.students_present_today()
+        absent_students = self.app.services.attendance.students_absent_today()
         attendance_alerts = self.app.services.attendance.student_attendance_alerts()
         self.attendance_alerts_by_student = {int(row["student_id"]): row for row in attendance_alerts}
         self.cards["student_present"].config(text=str(len(present_students)))
@@ -141,6 +165,16 @@ class DashboardPage(BasePage):
                     row["punches"],
                     self._attendance_time(row["first_seen"]),
                     self._attendance_time(row["last_seen"]),
+                ),
+            )
+
+        self.absent_tree.delete(*self.absent_tree.get_children())
+        for row in absent_students:
+            self.absent_tree.insert(
+                "", "end", values=(
+                    row["student_name"], row["class_name"] or "", row["courses"] or "",
+                    row["contact"] or "", self._attendance_date(row["last_seen"]),
+                    row["device_status"],
                 ),
             )
 

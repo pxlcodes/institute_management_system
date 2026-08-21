@@ -646,6 +646,35 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(rows[0]["device_uid"], 7)
             self.assertEqual(rows[0]["log_count"], 0)
 
+    def test_students_absent_today_excludes_students_with_a_punch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = SQLiteDatabase(Path(folder) / "absent_today.db", False)
+            course_id = db.execute(
+                "INSERT INTO courses (course_name,category,billing_type,default_fee,status) VALUES (?,?,?,?,?)",
+                ("Test Tuition", "Tuition", "Monthly", 1000, "Active"),
+            )
+            absent_id = db.execute(
+                "INSERT INTO students (student_name,class_name,joining_date,status) VALUES (?,?,?,?)",
+                ("Absent Student", "10", date.today().isoformat(), "Active"),
+            )
+            present_id = db.execute(
+                "INSERT INTO students (student_name,class_name,joining_date,status) VALUES (?,?,?,?)",
+                ("Present Student", "10", date.today().isoformat(), "Active"),
+            )
+            for student_id in (absent_id, present_id):
+                db.execute(
+                    "INSERT INTO enrollments (student_id,course_id,start_date,status) VALUES (?,?,?,?)",
+                    (student_id, course_id, date.today().isoformat(), "Active"),
+                )
+            db.execute(
+                "INSERT INTO attendance_logs (device_user_id,person_type,person_id,occurred_at,event_type) VALUES (?,?,?,?,?)",
+                ("present-1", "student", present_id, f"{date.today().isoformat()} 09:00:00", "Check In"),
+            )
+            service = AttendanceService(AttendanceRepository(db), DisabledAttendanceDevice())
+            absent = service.students_absent_today()
+            self.assertEqual([row["student_name"] for row in absent], ["Absent Student"])
+            self.assertEqual(absent[0]["device_status"], "Not linked")
+
     def test_attendance_mapping_merges_existing_punches_and_calculates_staff_totals(self):
         with tempfile.TemporaryDirectory() as folder:
             db = SQLiteDatabase(Path(folder) / "attendance.db", False)

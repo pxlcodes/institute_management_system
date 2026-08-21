@@ -269,6 +269,35 @@ class AttendanceRepository:
             (start_at, end_at),
         )
 
+    def students_absent(self, start_at: str, end_at: str):
+        """Active enrolled students without a mapped attendance punch in a period."""
+        return self.db.query(
+            """
+            SELECT s.id,s.student_name,s.class_name,s.contact,s.parent_name,
+                   GROUP_CONCAT(DISTINCT c.course_name) courses,MIN(e.start_date) enrollment_start,
+                   MAX(previous_log.occurred_at) last_seen,
+                   CASE WHEN EXISTS (
+                     SELECT 1 FROM device_user_mappings mapping
+                     WHERE mapping.person_type='student' AND mapping.person_id=s.id
+                       AND mapping.status='Active'
+                   ) THEN 'Linked' ELSE 'Not linked' END device_status
+            FROM students s
+            JOIN enrollments e ON e.student_id=s.id AND e.status='Active'
+            JOIN courses c ON c.id=e.course_id
+            LEFT JOIN attendance_logs previous_log
+              ON previous_log.person_type='student' AND previous_log.person_id=s.id
+            WHERE s.status='Active'
+              AND NOT EXISTS (
+                SELECT 1 FROM attendance_logs today_log
+                WHERE today_log.person_type='student' AND today_log.person_id=s.id
+                  AND today_log.occurred_at BETWEEN ? AND ?
+              )
+            GROUP BY s.id,s.student_name,s.class_name,s.contact,s.parent_name
+            ORDER BY s.student_name
+            """,
+            (start_at, end_at),
+        )
+
     def students_with_attendance(self):
         """One row per active mapped student who has ever punched on the device."""
         return self.db.query(
