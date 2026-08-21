@@ -30,7 +30,9 @@ WORK_ITEMS_VERSION = 8
 WORK_ITEMS_NAME = "add staff tasks and bug report tracking"
 ATTENDANCE_ALERT_REVIEW_VERSION = 9
 ATTENDANCE_ALERT_REVIEW_NAME = "add attendance alert review history"
-LATEST_SCHEMA_VERSION = ATTENDANCE_ALERT_REVIEW_VERSION
+STAFF_ACCOUNT_VERSION = 10
+STAFF_ACCOUNT_NAME = "add staff payment accounts and transaction statements"
+LATEST_SCHEMA_VERSION = STAFF_ACCOUNT_VERSION
 
 
 INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
@@ -57,6 +59,8 @@ INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("todo_items", "idx_todo_status_due", ("status", "due_date")),
     ("bug_reports", "idx_bug_status_created", ("status", "created_at")),
     ("attendance_alert_reviews", "idx_attendance_alert_review_student", ("student_id", "id")),
+    ("staff_payment_accounts", "idx_staff_payment_account_teacher", ("teacher_id",)),
+    ("staff_payment_transactions", "idx_staff_payment_transaction_account_date", ("staff_account_id", "transaction_date")),
     ("account_transfers", "idx_transfers_date", ("transfer_date",)),
     ("device_user_mappings", "idx_device_mapping_person", ("person_type", "person_id", "status")),
     ("attendance_logs", "idx_attendance_person_time", ("person_type", "person_id", "occurred_at")),
@@ -177,6 +181,7 @@ def normalize_mysql_schema(db) -> None:
         ensure_mysql_counterparty_payable_migration(db)
         ensure_mysql_work_items_migration(db)
         ensure_mysql_attendance_alert_review_migration(db)
+        ensure_mysql_staff_account_migration(db)
         ensure_mysql_indexes(db)
         ensure_mysql_bill_month_guard(db)
         ensure_mysql_certificate_migration(db)
@@ -223,6 +228,7 @@ def normalize_mysql_schema(db) -> None:
     ensure_mysql_counterparty_payable_migration(db)
     ensure_mysql_work_items_migration(db)
     ensure_mysql_attendance_alert_review_migration(db)
+    ensure_mysql_staff_account_migration(db)
     ensure_mysql_indexes(db)
     ensure_mysql_bill_month_guard(db)
     ensure_mysql_certificate_migration(db)
@@ -402,6 +408,56 @@ def ensure_mysql_attendance_alert_review_migration(db) -> None:
         db.execute("INSERT INTO schema_migrations (version,migration_name) VALUES (?,?)", (ATTENDANCE_ALERT_REVIEW_VERSION, ATTENDANCE_ALERT_REVIEW_NAME))
 
 
+def ensure_mysql_staff_account_migration(db) -> None:
+    """Create one internal payment account per staff member and backfill existing staff."""
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS staff_payment_accounts ("
+        "id INTEGER AUTO_INCREMENT PRIMARY KEY,teacher_id INTEGER NOT NULL UNIQUE,"
+        "account_name VARCHAR(255) NOT NULL UNIQUE,account_number VARCHAR(100),"
+        "account_holder VARCHAR(255),bank_name VARCHAR(255),status VARCHAR(50) NOT NULL DEFAULT 'Active',"
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at DATETIME NULL,"
+        "FOREIGN KEY(teacher_id) REFERENCES teachers(id) ON DELETE RESTRICT) ENGINE=InnoDB"
+    )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS staff_payment_transactions ("
+        "id INTEGER AUTO_INCREMENT PRIMARY KEY,staff_account_id INTEGER NOT NULL,transaction_date VARCHAR(30) NOT NULL,"
+        "transaction_type VARCHAR(50) NOT NULL,amount DECIMAL(14,2) NOT NULL,source_type VARCHAR(100) NOT NULL,"
+        "source_id INTEGER,paid_from_account_id INTEGER NULL,reference_no VARCHAR(255),particular VARCHAR(500) NOT NULL,"
+        "remarks TEXT,created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "FOREIGN KEY(staff_account_id) REFERENCES staff_payment_accounts(id) ON DELETE RESTRICT,"
+        "FOREIGN KEY(paid_from_account_id) REFERENCES accounts(id) ON DELETE SET NULL) ENGINE=InnoDB"
+    )
+    db.execute(
+        "INSERT IGNORE INTO staff_payment_accounts "
+        "(teacher_id,account_name,account_number,account_holder,bank_name,status) "
+        "SELECT t.id,CONCAT('Staff Account - ',t.id,' - ',t.teacher_name),t.bank_account_number,"
+        "t.account_holder_name,t.bank_name,t.status FROM teachers t"
+    )
+    db.execute(
+        "INSERT INTO staff_payment_transactions "
+        "(staff_account_id,transaction_date,transaction_type,amount,source_type,source_id,"
+        "paid_from_account_id,reference_no,particular,remarks) "
+        "SELECT spa.id,sp.payment_date,'Salary Payment',sp.net_salary,'Salary Payout',sp.id,"
+        "sp.paid_from_account_id,sp.voucher_no,CONCAT('Salary payment for ',sp.salary_month),sp.remarks "
+        "FROM salary_payouts sp JOIN staff_payment_accounts spa ON spa.teacher_id=sp.teacher_id "
+        "WHERE NOT EXISTS (SELECT 1 FROM staff_payment_transactions tx "
+        "WHERE tx.source_type='Salary Payout' AND tx.source_id=sp.id)"
+    )
+    db.execute(
+        "INSERT INTO staff_payment_transactions "
+        "(staff_account_id,transaction_date,transaction_type,amount,source_type,source_id,"
+        "paid_from_account_id,reference_no,particular,remarks) "
+        "SELECT spa.id,ta.advance_date,'Staff Advance',ta.amount,'Teacher Advance',ta.id,"
+        "ta.paid_from_account_id,ta.reference_no,'Recoverable staff advance',ta.remarks "
+        "FROM teacher_advances ta JOIN staff_payment_accounts spa ON spa.teacher_id=ta.teacher_id "
+        "WHERE NOT EXISTS (SELECT 1 FROM staff_payment_transactions tx "
+        "WHERE tx.source_type='Teacher Advance' AND tx.source_id=ta.id)"
+    )
+    applied = db.query_one("SELECT version FROM schema_migrations WHERE version=?", (STAFF_ACCOUNT_VERSION,))
+    if not applied:
+        db.execute("INSERT INTO schema_migrations (version,migration_name) VALUES (?,?)", (STAFF_ACCOUNT_VERSION, STAFF_ACCOUNT_NAME))
+
+
 def ensure_mysql_bill_month_guard(db) -> None:
     """Enforce the cross-table bill-month rule without a redundant column."""
     definitions = {
@@ -553,6 +609,61 @@ def normalize_sqlite_schema(path) -> None:
                 """
             )
 
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS staff_payment_accounts (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, teacher_id INTEGER NOT NULL UNIQUE,
+              account_name TEXT NOT NULL UNIQUE, account_number TEXT, account_holder TEXT,
+              bank_name TEXT, status TEXT NOT NULL DEFAULT 'Active',
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT,
+              FOREIGN KEY(teacher_id) REFERENCES teachers(id) ON DELETE RESTRICT
+            );
+            CREATE TABLE IF NOT EXISTS staff_payment_transactions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, staff_account_id INTEGER NOT NULL,
+              transaction_date TEXT NOT NULL, transaction_type TEXT NOT NULL, amount REAL NOT NULL,
+              source_type TEXT NOT NULL, source_id INTEGER, paid_from_account_id INTEGER,
+              reference_no TEXT, particular TEXT NOT NULL, remarks TEXT,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              FOREIGN KEY(staff_account_id) REFERENCES staff_payment_accounts(id) ON DELETE RESTRICT,
+              FOREIGN KEY(paid_from_account_id) REFERENCES accounts(id) ON DELETE SET NULL
+            );
+            """
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO staff_payment_accounts "
+            "(teacher_id,account_name,account_number,account_holder,bank_name,status) "
+            "SELECT id,'Staff Account - ' || id || ' - ' || teacher_name,bank_account_number,"
+            "account_holder_name,bank_name,status FROM teachers"
+        )
+        connection.execute(
+            """
+            INSERT INTO staff_payment_transactions
+              (staff_account_id,transaction_date,transaction_type,amount,source_type,source_id,
+               paid_from_account_id,reference_no,particular,remarks)
+            SELECT spa.id,sp.payment_date,'Salary Payment',sp.net_salary,'Salary Payout',sp.id,
+                   sp.paid_from_account_id,sp.voucher_no,'Salary payment for ' || sp.salary_month,sp.remarks
+            FROM salary_payouts sp JOIN staff_payment_accounts spa ON spa.teacher_id=sp.teacher_id
+            WHERE NOT EXISTS (
+              SELECT 1 FROM staff_payment_transactions tx
+              WHERE tx.source_type='Salary Payout' AND tx.source_id=sp.id
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO staff_payment_transactions
+              (staff_account_id,transaction_date,transaction_type,amount,source_type,source_id,
+               paid_from_account_id,reference_no,particular,remarks)
+            SELECT spa.id,ta.advance_date,'Staff Advance',ta.amount,'Teacher Advance',ta.id,
+                   ta.paid_from_account_id,ta.reference_no,'Recoverable staff advance',ta.remarks
+            FROM teacher_advances ta JOIN staff_payment_accounts spa ON spa.teacher_id=ta.teacher_id
+            WHERE NOT EXISTS (
+              SELECT 1 FROM staff_payment_transactions tx
+              WHERE tx.source_type='Teacher Advance' AND tx.source_id=ta.id
+            )
+            """
+        )
+
         for table, name, columns_used in INDEXES:
             columns_sql = ",".join(_identifier(column) for column in columns_used)
             connection.execute(
@@ -623,6 +734,10 @@ def normalize_sqlite_schema(path) -> None:
         connection.execute(
             "INSERT OR IGNORE INTO schema_migrations (version,migration_name) VALUES (?,?)",
             (ATTENDANCE_ALERT_REVIEW_VERSION, ATTENDANCE_ALERT_REVIEW_NAME),
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version,migration_name) VALUES (?,?)",
+            (STAFF_ACCOUNT_VERSION, STAFF_ACCOUNT_NAME),
         )
         connection.commit()
     except Exception:

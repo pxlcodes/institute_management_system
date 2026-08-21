@@ -43,6 +43,7 @@ from elh.services.certificates import CertificateService
 from elh.services.people import StudentService
 from elh.services.enrollments import EnrollmentService
 from elh.services.notifications import NotificationService
+from elh.services.staff_finance import StaffFinanceService
 from elh.core.settings import SettingsService
 from elh.integrations.sms.aakash import AakashSmsProvider
 from elh.integrations.sms.base import SmsProviderResponse
@@ -143,7 +144,7 @@ class ServiceTests(unittest.TestCase):
             )
             self.assertEqual(
                 int(db.query_one("SELECT MAX(version) version FROM schema_migrations")["version"]),
-                9,
+                10,
             )
             certificate_columns = {
                 row["name"] for row in db.query("PRAGMA table_info(course_certificates)")
@@ -554,6 +555,29 @@ class ServiceTests(unittest.TestCase):
                     "INSERT INTO due_bill_items (bill_id,billing_month,description,amount) VALUES (?,?,?,?)",
                     (bill_ids[1], "2083/04", "Fee again", 100),
                 )
+
+    def test_staff_payment_account_keeps_salary_and_advance_history(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = SQLiteDatabase(Path(folder) / "staff_accounts.db", False)
+            teacher_id = db.execute(
+                "INSERT INTO teachers (teacher_name,joined_date,bank_account_number,account_holder_name,bank_name,status) "
+                "VALUES (?,?,?,?,?,?)",
+                ("Maya Gurung", "2083/05/01", "123456", "Maya Gurung", "Example Bank", "Active"),
+            )
+            cash_id = db.execute(
+                "INSERT INTO accounts (account_name,account_type,opening_balance,status) VALUES (?,?,?,?)",
+                ("Test Cash", "Cash Counter", 0, "Active"),
+            )
+            finance = StaffFinanceService(db)
+            def add_history(connection):
+                finance.record_payment(connection, teacher_id, "2083/05/30", "Salary Payment", 12000,
+                                       "Salary Payout", 1, cash_id, "Salary payment for 2083/05")
+                finance.record_payment(connection, teacher_id, "2083/05/31", "Staff Advance", 2000,
+                                       "Teacher Advance", 1, cash_id, "Recoverable staff advance")
+            db.transaction(add_history)
+            account, transactions = finance.statement(teacher_id)
+            self.assertEqual(account["account_number"], "123456")
+            self.assertEqual([row["transaction_type"] for row in transactions], ["Staff Advance", "Salary Payment"])
 
     def test_vendor_credit_purchase_and_settlement_keep_cash_and_payable_balances(self):
         with tempfile.TemporaryDirectory() as folder:

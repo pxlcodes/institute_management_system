@@ -16,6 +16,7 @@ from elh.repositories import CertificateRepository
 from .enrollments import EnrollmentService
 from .notifications import NotificationService
 from elh.core.settings import SettingsService
+from .staff_finance import StaffFinanceService
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class ServiceContainer:
     billing: BillingService
     reports: ReportsService
     certificates: CertificateService
+    staff_finance: StaffFinanceService
 
     @classmethod
     def build(cls, config: AppConfig, db) -> "ServiceContainer":
@@ -79,6 +81,7 @@ class ServiceContainer:
             billing=BillingService(BillingRepository(db),printing,company_name,currency_symbol,notifications),
             reports=ReportsService(db,company_name,currency_symbol,printing),
             certificates=CertificateService(CertificateRepository(db),config,notifications),
+            staff_finance=StaffFinanceService(db),
         )
         if settings.get_bool("sms_enabled", False):
             notifications.dispatch_async()

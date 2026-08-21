@@ -222,10 +222,34 @@ class SalaryPage(CrudPage, AccountSelectionMixin, PaymentProofMixin):
                     ),
                 )
                 salary_id = cur.lastrowid
+                staff_cursor = conn.execute("SELECT teacher_name FROM teachers WHERE id=?", (teacher_id,))
+                staff = staff_cursor.fetchone(); staff_cursor.close()
+                staff_name = staff["teacher_name"] if staff else "Staff member"
+                gross_salary = basic + extra + bonus + allowance
+                expense_cursor = conn.execute(
+                    """
+                    INSERT INTO expense_records
+                    (expense_date,category,particular,amount,paid_from_account_id,paid_to,
+                     payment_status,payment_method,reference_no,remarks)
+                    VALUES (?, 'Staff Salary', ?, ?, ?, ?, 'Paid', ?, ?, ?)
+                    """,
+                    (
+                        pay_date, f"Salary expense for {staff_name} — {month}", gross_salary,
+                        account_id, staff_name, self.vars["method"].get(),
+                        self.vars["voucher"].get().strip(), self.vars["remarks"].get().strip(),
+                    ),
+                )
+                expense_cursor.close()
                 self.db.add_ledger(
                     conn, pay_date, account_id, "OUT", net, "Salary Payout",
                     salary_id, f"Salary payment for {month}",
                     self.vars["voucher"].get().strip(), self.vars["remarks"].get().strip()
+                )
+                self.app.services.staff_finance.record_payment(
+                    conn, teacher_id, pay_date, "Salary Payment", net,
+                    "Salary Payout", salary_id, account_id,
+                    f"Salary payment for {month}", self.vars["voucher"].get().strip(),
+                    self.vars["remarks"].get().strip(),
                 )
 
                 if advance > 0:
@@ -260,6 +284,13 @@ class SalaryPage(CrudPage, AccountSelectionMixin, PaymentProofMixin):
                             updates,
                         )
                         updates_cursor.close()
+                        recovered = advance - remaining_deduction
+                        self.app.services.staff_finance.record_payment(
+                            conn, teacher_id, pay_date, "Advance Recovery", recovered,
+                            "Salary Payout", salary_id, None,
+                            f"Advance recovery through salary — {month}",
+                            self.vars["voucher"].get().strip(), self.vars["remarks"].get().strip(),
+                        )
 
             self.db.transaction(callback)
             self.clear()

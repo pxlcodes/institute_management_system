@@ -132,6 +132,12 @@ class AdvancesPage(CrudPage, AccountSelectionMixin, PaymentProofMixin):
                     "Teacher Advance", cur.lastrowid, "Teacher advance payout",
                     self.vars["reference"].get().strip(), self.vars["remarks"].get().strip()
                 )
+                self.app.services.staff_finance.record_payment(
+                    conn, teacher_id, trans_date, "Staff Advance", amount,
+                    "Teacher Advance", cur.lastrowid, account_id,
+                    "Recoverable staff advance", self.vars["reference"].get().strip(),
+                    self.vars["remarks"].get().strip(),
+                )
             self.db.transaction(callback)
             self.clear()
             self.app.refresh_all()

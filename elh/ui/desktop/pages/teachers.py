@@ -132,6 +132,7 @@ class TeachersPage(CrudPage):
             self.app.services.attendance.assign_person_device(
                 "teacher", teacher_id, device_user_id
             )
+            self.app.services.staff_finance.sync_account(teacher_id)
             self.clear()
             self.app.refresh_all()
         except Exception as exc:
@@ -156,6 +157,7 @@ class TeachersPage(CrudPage):
             self.app.services.attendance.assign_person_device(
                 "teacher", self.selected_id, device_user_id
             )
+            self.app.services.staff_finance.sync_account(self.selected_id)
             self.clear()
             self.app.refresh_all()
         except Exception as exc:
@@ -253,15 +255,38 @@ class TeachersPage(CrudPage):
             (self.selected_id, self.selected_id, self.selected_id),
         )
         outstanding = float(summary["advances_paid"]) - float(summary["advances_recovered"])
-        messagebox.showinfo(
-            "Staff Payment Summary",
-            f"{staff['teacher_name']}\n\n"
-            f"Salary paid: {money(summary['salary_paid'])}\n"
-            f"Advances paid: {money(summary['advances_paid'])}\n"
-            f"Advance outstanding: {money(outstanding)}\n\n"
-            "Use Salary Payouts and Staff Advances for the detailed transaction history.",
-            parent=self,
-        )
+        account, transactions = self.app.services.staff_finance.statement(self.selected_id)
+        dialog = tk.Toplevel(self)
+        dialog.title("Staff Payment Account Statement")
+        dialog.transient(self.winfo_toplevel())
+        dialog.minsize(860, 470)
+        shell = ttk.Frame(dialog, padding=14, style="Form.TFrame")
+        shell.pack(fill="both", expand=True)
+        bank_detail = " | ".join(
+            value for value in (account["bank_name"], account["account_holder"], account["account_number"]) if value
+        ) or "No receiving bank details saved"
+        ttk.Label(shell, text=f"{staff['teacher_name']} — {account['account_name']}", style="SubTitle.TLabel").pack(anchor="w")
+        ttk.Label(shell, text=f"Receiving details: {bank_detail}", style="Hint.TLabel").pack(anchor="w", pady=(2, 8))
+        ttk.Label(
+            shell,
+            text=(f"Salary paid: {money(summary['salary_paid'])}    |    "
+                  f"Advances paid: {money(summary['advances_paid'])}    |    "
+                  f"Advance outstanding: {money(outstanding)}"),
+            style="FormValue.TLabel",
+        ).pack(anchor="w", pady=(0, 10))
+        area = ttk.Frame(shell); area.pack(fill="both", expand=True)
+        tree = self.make_tree(area, [
+            ("date", "Date", 110), ("type", "Transaction", 150), ("amount", "Amount", 120),
+            ("from", "Paid From", 160), ("reference", "Reference", 120), ("particular", "Particular", 250),
+        ])
+        for transaction in transactions:
+            tree.insert("", "end", values=(
+                transaction["transaction_date"], transaction["transaction_type"],
+                money(transaction["amount"]), transaction["paid_from"] or "",
+                transaction["reference_no"] or "", transaction["particular"],
+            ))
+        ttk.Button(shell, text="Close", command=dialog.destroy).pack(anchor="e", pady=(10, 0))
+        dialog.grab_set()
 
 
 # ---------------------------------------------------------------------------
