@@ -520,6 +520,49 @@ class NotificationService:
                 continue
         raise RuntimeError("Could not allocate an absence SMS delivery record.")
 
+    def queue_absence_sms_batch(
+        self, student_ids: list[int], attendance_date: str, *, asynchronous: bool = True
+    ) -> tuple[list[int], list[str]]:
+        """Queue one personalised absence SMS per selected student.
+
+        Invalid or missing contacts are skipped and returned with a reason; valid
+        recipients are still queued rather than losing the entire batch.
+        """
+        provider = self.validate_provider_configuration()
+        queued: list[int] = []
+        skipped: list[str] = []
+        for student_id in dict.fromkeys(int(value) for value in student_ids):
+            try:
+                details = self.absence_sms_details(student_id, attendance_date)
+                recipient = self.normalize_recipient(details["contact"])
+            except Exception as exc:
+                skipped.append(f"Student #{student_id}: {exc}")
+                continue
+            for _attempt in range(5):
+                try:
+                    log_id = self.db.execute(
+                        "INSERT INTO sms_delivery_log "
+                        "(event_key,entity_type,entity_id,recipient,message_text,provider,status) "
+                        "VALUES ('attendance_absence','manual_student_absence',?,?,?,?, 'Pending')",
+                        (
+                            secrets.randbelow(2_000_000_000) + 1,
+                            recipient, details["message"], provider,
+                        ),
+                    )
+                    queued.append(log_id)
+                    break
+                except sqlite3.IntegrityError:
+                    continue
+            else:
+                skipped.append(f"{details['student_name']}: could not allocate a delivery record")
+        if queued:
+            if asynchronous:
+                self.dispatch_async()
+            else:
+                for log_id in queued:
+                    self.dispatch(log_id)
+        return queued, skipped
+
     def send_test(self, recipient: str, message: str) -> int:
         clean_recipient = self.normalize_recipient(recipient)
         clean_message = message.strip()

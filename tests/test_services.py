@@ -475,6 +475,38 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(log["status"], "Sent")
             self.assertIn("2083/05/02", log["message_text"])
 
+    def test_bulk_absence_sms_queues_valid_contacts_and_skips_invalid_ones(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = SQLiteDatabase(Path(folder) / "bulk-absence-sms.db", False)
+            valid_one = db.execute(
+                "INSERT INTO students (student_name,contact,joining_date,status) VALUES (?,?,?,?)",
+                ("Valid One", "9800000004", "2083/05/01", "Active"),
+            )
+            invalid = db.execute(
+                "INSERT INTO students (student_name,contact,joining_date,status) VALUES (?,?,?,?)",
+                ("Invalid Contact", "", "2083/05/01", "Active"),
+            )
+            valid_two = db.execute(
+                "INSERT INTO students (student_name,contact,joining_date,status) VALUES (?,?,?,?)",
+                ("Valid Two", "9800000005", "2083/05/01", "Active"),
+            )
+            notifications = NotificationService(db, replace(AppConfig(), aakash_sms_token="a-token"))
+            SettingsService(db).set("sms_provider", "aakash")
+
+            class ManualProvider:
+                def send(self, _recipient, _message):
+                    return SmsProviderResponse(True, "200", "queued")
+
+            with patch("elh.services.notifications.create_sms_provider", return_value=ManualProvider()):
+                queued, skipped = notifications.queue_absence_sms_batch(
+                    [valid_one, invalid, valid_two], "2083/05/02", asynchronous=False
+                )
+            self.assertEqual(len(queued), 2)
+            self.assertEqual(len(skipped), 1)
+            self.assertEqual(
+                db.query_one("SELECT COUNT(*) total FROM sms_delivery_log WHERE status='Sent'")["total"], 2
+            )
+
     def test_sms_outbox_templates_and_both_provider_adapters(self):
         with tempfile.TemporaryDirectory() as folder:
             db = SQLiteDatabase(Path(folder) / "sms-outbox.db", False)

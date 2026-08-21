@@ -100,8 +100,11 @@ class DashboardPage(BasePage):
             absent_actions, text="SMS Selected Absent Student", style="Accent.TButton",
             command=self.send_selected_absence_sms,
         ).pack(side="left")
+        ttk.Button(
+            absent_actions, text="Bulk SMS Selected", command=self.send_bulk_absence_sms,
+        ).pack(side="left", padx=(6, 0))
         ttk.Label(
-            absent_actions, text="Select a student and send an absence alert, or double-click the row.",
+            absent_actions, text="Use Ctrl/Shift to select several students. Double-click sends to one student.",
             style="Hint.TLabel",
         ).pack(side="left", padx=10)
         absent_area = ttk.Frame(absent_tab)
@@ -115,7 +118,7 @@ class DashboardPage(BasePage):
                 ("device", "Device", 110),
             ],
         )
-        self.absent_tree.configure(height=8)
+        self.absent_tree.configure(height=8, selectmode="extended")
         self.absent_tree.bind("<Double-1>", self.send_selected_absence_sms)
 
         ttk.Label(accounts_tab, text="Account Balances", style="SubTitle.TLabel").pack(
@@ -307,6 +310,40 @@ class DashboardPage(BasePage):
 
         ttk.Button(actions, text="Queue SMS", style="Accent.TButton", command=queue_sms).pack(side="right", padx=3)
         dialog.grab_set()
+
+    def send_bulk_absence_sms(self):
+        selected = self.absent_tree.selection()
+        if not selected:
+            messagebox.showinfo("Bulk Absence SMS", "Select one or more absent students first.", parent=self)
+            return
+        student_ids = []
+        for item_id in selected:
+            try:
+                student_id = int(str(item_id).removeprefix("absent-"))
+            except ValueError:
+                continue
+            if student_id in self.absent_students_by_student:
+                student_ids.append(student_id)
+        if not student_ids:
+            messagebox.showerror("Bulk Absence SMS", "Refresh the dashboard and select the students again.", parent=self)
+            return
+        absence_date = today_iso()
+        if not messagebox.askyesno(
+            "Bulk Absence SMS",
+            f"Queue a personalised absence SMS for {len(student_ids)} selected student(s) for {absence_date}?\n\n"
+            "Students with an invalid or missing mobile number will be skipped.",
+            parent=self,
+        ):
+            return
+        try:
+            queued, skipped = self.app.services.notifications.queue_absence_sms_batch(student_ids, absence_date)
+            message = f"Queued {len(queued)} absence SMS message(s)."
+            if skipped:
+                message += f"\n\nSkipped {len(skipped)} student(s) with contact or delivery-record issues."
+            message += "\n\nCheck SMS & Notifications for delivery results."
+            messagebox.showinfo("Bulk Absence SMS", message, parent=self)
+        except Exception as exc:
+            self.show_error(exc)
 
 
 # ---------------------------------------------------------------------------
