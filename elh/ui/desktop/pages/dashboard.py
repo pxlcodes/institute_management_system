@@ -94,6 +94,16 @@ class DashboardPage(BasePage):
             text="Active enrolled students with no attendance punch today. “Not linked” means no attendance-device user is attached.",
             style="Hint.TLabel",
         ).pack(anchor="w", pady=(0, 7), padx=4)
+        absent_actions = ttk.Frame(absent_tab, style="Toolbar.TFrame", padding=(8, 4))
+        absent_actions.pack(fill="x", pady=(0, 6))
+        ttk.Button(
+            absent_actions, text="SMS Selected Absent Student", style="Accent.TButton",
+            command=self.send_selected_absence_sms,
+        ).pack(side="left")
+        ttk.Label(
+            absent_actions, text="Select a student and send an absence alert, or double-click the row.",
+            style="Hint.TLabel",
+        ).pack(side="left", padx=10)
         absent_area = ttk.Frame(absent_tab)
         absent_area.pack(fill="x")
         self.absent_tree = CrudPage.make_tree(
@@ -107,16 +117,6 @@ class DashboardPage(BasePage):
         )
         self.absent_tree.configure(height=8)
         self.absent_tree.bind("<Double-1>", self.send_selected_absence_sms)
-        absent_actions = ttk.Frame(absent_tab, style="Toolbar.TFrame", padding=(8, 4))
-        absent_actions.pack(fill="x")
-        ttk.Button(
-            absent_actions, text="SMS Selected Absent Student", style="Accent.TButton",
-            command=self.send_selected_absence_sms,
-        ).pack(side="left")
-        ttk.Label(
-            absent_actions, text="Select a student and send an absence alert, or double-click the row.",
-            style="Hint.TLabel",
-        ).pack(side="left", padx=10)
 
         ttk.Label(accounts_tab, text="Account Balances", style="SubTitle.TLabel").pack(
             anchor="w", pady=(18, 7), padx=4
