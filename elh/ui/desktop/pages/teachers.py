@@ -87,10 +87,17 @@ class TeachersPage(CrudPage):
             ],
         )
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
+        self.tree.bind("<Double-1>", self.open_editor)
+        self.tree.configure(selectmode="extended")
         ttk.Button(
             self.page_toolbar,
             text="Staff Payment Summary",
             command=self.show_payment_summary,
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            self.page_toolbar,
+            text="Bulk Edit Selected",
+            command=self.bulk_edit_selected,
         ).pack(side="left", padx=4)
 
     def values(self):
@@ -212,7 +219,72 @@ class TeachersPage(CrudPage):
         for key, db_key in mapping.items():
             self.vars[key].set(r[db_key] if r[db_key] is not None else "")
         self.vars["attendance"].set(current_attendance)
+        # A single click selects and prepares the record. Editing stays an
+        # explicit double-click/Enter action, which also enables multi-select.
+
+    def open_editor(self, _event=None):
+        selection = self.tree.selection()
+        if len(selection) != 1:
+            messagebox.showinfo(
+                "Edit Staff",
+                "Select one staff member to edit. Use Bulk Edit Selected for multiple staff.",
+                parent=self,
+            )
+            return "break"
+        self.on_select()
         self.show_form_dialog()
+        return "break"
+
+    def bulk_edit_selected(self):
+        selections = self.tree.selection()
+        if not selections:
+            messagebox.showinfo("Bulk Edit Staff", "Select one or more staff rows first.", parent=self)
+            return
+        staff_ids = [int(self.tree.item(item, "values")[0]) for item in selections]
+        dialog = tk.Toplevel(self)
+        dialog.title("Bulk Edit Staff")
+        dialog.transient(self.winfo_toplevel())
+        dialog.grab_set()
+        form = ttk.Frame(dialog, padding=16, style="Form.TFrame")
+        form.pack(fill="both", expand=True)
+        ttk.Label(
+            form,
+            text=f"Update {len(staff_ids)} selected staff member(s). Leave a field unchanged when not needed.",
+            style="Hint.TLabel",
+            wraplength=460,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
+        staff_type = tk.StringVar(value="Leave unchanged")
+        status = tk.StringVar(value="Leave unchanged")
+        fb = FormBuilder(form, start_row=1)
+        fb.combo("Staff Type", staff_type, ["Leave unchanged", "Teaching", "Non-Teaching"])
+        fb.combo("Status", status, ["Leave unchanged", "Active", "Inactive"])
+
+        def save():
+            updates = []
+            params: list[object] = []
+            if staff_type.get() != "Leave unchanged":
+                updates.append("staff_type=?")
+                params.append(staff_type.get())
+            if status.get() != "Leave unchanged":
+                updates.append("status=?")
+                params.append(status.get())
+            if not updates:
+                messagebox.showwarning("Bulk Edit Staff", "Choose at least one value to update.", parent=dialog)
+                return
+            placeholders = ",".join("?" for _ in staff_ids)
+            self.db.execute(
+                f"UPDATE teachers SET {','.join(updates)} WHERE id IN ({placeholders})",
+                tuple(params + staff_ids),
+            )
+            dialog.destroy()
+            self.app.refresh_all()
+            messagebox.showinfo("Bulk Edit Staff", f"Updated {len(staff_ids)} staff member(s).", parent=self)
+
+        actions = ttk.Frame(form, style="Form.TFrame")
+        actions.grid(row=fb.row, column=1, sticky="e", pady=(14, 0))
+        ttk.Button(actions, text="Cancel", command=dialog.destroy).pack(side="right", padx=(6, 0))
+        ttk.Button(actions, text="Save Changes", style="Accent.TButton", command=save).pack(side="right")
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
 
     def refresh(self):
         self.attendance_user_map, _current = attendance_user_choices(self.app, "teacher")

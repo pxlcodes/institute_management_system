@@ -141,12 +141,38 @@ class CrudPage(BasePage):
         search_row.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
         ttk.Label(search_row, text="Search", style="Hint.TLabel").pack(side="left")
         search_var = tk.StringVar()
-        ttk.Entry(search_row, textvariable=search_var, width=28).pack(side="left", padx=(6, 12))
-        filter_var = tk.StringVar(value="All columns")
+        ttk.Entry(search_row, textvariable=search_var, width=24).pack(side="left", padx=(6, 6))
+        ttk.Label(search_row, text="in", style="Hint.TLabel").pack(side="left")
+        search_column_var = tk.StringVar(value="All columns")
         headings = {key: heading for key, heading, _width in columns}
-        filter_combo = ttk.Combobox(search_row, textvariable=filter_var, state="readonly", width=18,
+        search_combo = ttk.Combobox(search_row, textvariable=search_column_var, state="readonly", width=16,
             values=["All columns", *headings.values()])
-        filter_combo.pack(side="left")
+        search_combo.pack(side="left", padx=(4, 12))
+
+        ttk.Label(search_row, text="Filter", style="Hint.TLabel").pack(side="left")
+        filter_column_var = tk.StringVar(value="All columns")
+        filter_combo = ttk.Combobox(search_row, textvariable=filter_column_var, state="readonly", width=16,
+            values=["All columns", *headings.values()])
+        filter_combo.pack(side="left", padx=(6, 4))
+        filter_value_var = tk.StringVar()
+        ttk.Entry(search_row, textvariable=filter_value_var, width=18).pack(side="left", padx=(0, 6))
+
+        visible_columns = {key: tk.BooleanVar(value=True) for key, _heading, _width in columns}
+        columns_button = ttk.Menubutton(search_row, text="Columns ▾")
+        columns_menu = tk.Menu(columns_button, tearoff=False)
+        def update_visible_columns():
+            selected = [key for key, variable in visible_columns.items() if variable.get()]
+            if not selected:
+                first_key = columns[0][0]
+                visible_columns[first_key].set(True)
+                selected = [first_key]
+            tree.configure(displaycolumns=selected)
+        for key, heading, _width in columns:
+            columns_menu.add_checkbutton(
+                label=heading, variable=visible_columns[key], command=update_visible_columns
+            )
+        columns_button.configure(menu=columns_menu)
+        columns_button.pack(side="left", padx=(0, 6))
         count_var = tk.StringVar(value="0 records")
         ttk.Label(search_row, textvariable=count_var, style="Hint.TLabel").pack(side="right")
         tree = ttk.Treeview(
@@ -203,19 +229,34 @@ class CrudPage(BasePage):
             nonlocal filter_job
             filter_job = None
             query = search_var.get().strip().casefold()
-            selected_key = next((key for key, heading in headings.items() if heading == filter_var.get()), None)
+            search_key = next((key for key, heading in headings.items() if heading == search_column_var.get()), None)
+            filter_key = next((key for key, heading in headings.items() if heading == filter_column_var.get()), None)
+            filter_text = filter_value_var.get().strip().casefold()
             shown = 0
             for iid in all_items:
-                values = [tree.set(iid, selected_key)] if selected_key else tree.item(iid, "values")
-                if not query or any(query in str(value).casefold() for value in values):
+                search_values = [tree.set(iid, search_key)] if search_key else tree.item(iid, "values")
+                filter_values = [tree.set(iid, filter_key)] if filter_key else tree.item(iid, "values")
+                search_match = not query or any(query in str(value).casefold() for value in search_values)
+                filter_match = not filter_text or any(filter_text in str(value).casefold() for value in filter_values)
+                if search_match and filter_match:
                     tree.reattach(iid, "", "end"); shown += 1
                 else: tree.detach(iid)
             count_var.set(f"{shown} record{'s' if shown != 1 else ''}")
         apply_filter = schedule_filter
         search_var.trace_add("write", schedule_filter)
+        filter_value_var.trace_add("write", schedule_filter)
+        search_combo.bind("<<ComboboxSelected>>", schedule_filter)
         filter_combo.bind("<<ComboboxSelected>>", schedule_filter)
-        ttk.Button(search_row, text="Clear", command=lambda: search_var.set("")).pack(side="left", padx=6)
-        tree.search_var, tree.filter_var = search_var, filter_var
+        def clear_filters():
+            search_var.set("")
+            search_column_var.set("All columns")
+            filter_column_var.set("All columns")
+            filter_value_var.set("")
+        ttk.Button(search_row, text="Clear", command=clear_filters).pack(side="left", padx=2)
+        tree.search_var = search_var
+        tree.filter_var = filter_value_var
+        tree.filter_column_var = filter_column_var
+        tree.visible_column_vars = visible_columns
         tree.bind("<Return>", lambda _event: tree.event_generate("<Double-1>"), add="+")
         tree.bind("<space>", lambda _event: tree.event_generate("<Double-1>"), add="+")
         return tree
