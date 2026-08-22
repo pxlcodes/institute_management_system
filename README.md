@@ -44,13 +44,14 @@ For MySQL, set `ELH_DATABASE_ENGINE=mysql` together with `ELH_DATABASE_HOST`, `E
 Open **System Admin** in the sidebar for:
 
 - database integrity, migration, storage, logging, configuration, backup, and device health;
-- editable `.env` deployment constraints;
-- database-backed runtime settings.
+- protected `.env` deployment, device, path, and secret settings;
+- database-backed operational settings (application title, session lock, window size,
+  finance policy, certificates, SMS events, and attendance thresholds).
 
 Unexpected startup and UI errors are written to rotating files under `logs/`. The UI shows
 the log location instead of failing silently. An authenticated session locks automatically
-after `ELH_SESSION_IDLE_MINUTES` of inactivity; set the value to `0` only when automatic
-locking is intentionally disabled.
+after the **Auto-lock After** value in **System Admin → Application Settings**; set the
+value to `0` only when automatic locking is intentionally disabled.
 
 ## Backup and recovery
 
@@ -195,10 +196,11 @@ Monetary values on bills, transactions, and salary payouts remain deliberate his
 
 Startup and the maintenance migration action apply versioned normalization and workload indexes. Bulk imports, attendance synchronization, dashboard balances, and multi-student bill generation use set-based or batched queries to avoid per-row database calls.
 
-Business configuration that operators may change—currency, certificate numbering, SMS provider,
-sender identity, timeout, enabled events, and message templates—is stored in structured database
-tables and included in backups. Machine/deployment values, file paths, database credentials,
-hardware endpoints, and SMS API tokens remain in `.env`.
+Business configuration that operators may change—application title, session lock, window size,
+balance policy, currency, certificates, SMS provider, sender identity, timeout, enabled events,
+attendance thresholds, and message templates—is stored in structured database tables and included
+in backups. Machine/deployment values, file paths, database credentials, hardware endpoints, and
+SMS API tokens remain in `.env`.
 
 ## Payees, vendors, and credit expenses
 

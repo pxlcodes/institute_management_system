@@ -74,8 +74,10 @@ class AdvancesPage(CrudPage, AccountSelectionMixin, PaymentProofMixin):
         self.add_payment_proof_buttons(self)
 
     def refresh(self):
-        teachers = self.db.query(
-            "SELECT id, teacher_name FROM teachers WHERE status='Active' ORDER BY teacher_name"
+        teachers = self.app.lookup_cache.get(
+            "active_staff", lambda: self.db.query(
+                "SELECT id, teacher_name FROM teachers WHERE status='Active' ORDER BY teacher_name"
+            )
         )
         self.teacher_map = {f"{r['id']} - {r['teacher_name']}": r["id"] for r in teachers}
         self.teacher_combo["values"] = list(self.teacher_map)

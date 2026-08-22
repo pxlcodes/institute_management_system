@@ -169,7 +169,16 @@ class HealthService:
             BackupService(self.config).verify(newest)
         except (BackupError, OSError) as exc:
             return HealthCheck("backup", "error", f"Latest backup failed verification: {exc}")
-        status = "ok" if age_hours <= self.config.health_stale_backup_hours else "warning"
+        stale_after = self.config.health_stale_backup_hours
+        try:
+            row = self._query_one(
+                "SELECT setting_value FROM settings WHERE setting_key='health_stale_backup_hours'"
+            )
+            if row:
+                stale_after = max(1, int(row["setting_value"] or stale_after))
+        except Exception:
+            pass
+        status = "ok" if age_hours <= stale_after else "warning"
         return HealthCheck(
             "backup",
             status,

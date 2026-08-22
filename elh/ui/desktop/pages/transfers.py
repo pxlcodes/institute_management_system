@@ -108,8 +108,10 @@ class TransfersPage(CrudPage, AccountSelectionMixin):
         self.vars["charge"].set("0")
 
     def refresh(self):
-        rows = self.db.query(
-            "SELECT id, account_name FROM accounts WHERE status='Active' ORDER BY account_name"
+        rows = self.app.lookup_cache.get(
+            "active_accounts", lambda: self.db.query(
+                "SELECT id, account_name FROM accounts WHERE status='Active' ORDER BY account_name"
+            )
         )
         self.account_map = {f"{r['id']} - {r['account_name']}": r["id"] for r in rows}
         values = list(self.account_map)

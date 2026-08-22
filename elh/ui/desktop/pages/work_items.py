@@ -35,9 +35,14 @@ class WorkItemsPage(CrudPage):
         self.bug_tree.bind("<Double-1>", self.open_bug)
 
     def refresh(self):
+        staff_rows = self.app.lookup_cache.get(
+            "active_staff", lambda: self.db.query(
+                "SELECT id,teacher_name FROM teachers WHERE status='Active' ORDER BY teacher_name"
+            )
+        )
         self.staff_map = {
             f"{row['teacher_name']} (ID: {row['id']})": int(row["id"])
-            for row in self.db.query("SELECT id,teacher_name FROM teachers WHERE status='Active' ORDER BY teacher_name")
+            for row in staff_rows
         }
         self.clear_tree(self.task_tree)
         for row in self.db.query(

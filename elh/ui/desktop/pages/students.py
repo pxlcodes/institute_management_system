@@ -608,8 +608,10 @@ class StudentsPage(CrudPage, ImportTemplateMixin):
         dialog.grab_set()
 
     def refresh(self) -> None:
-        schools = self.db.query(
-            "SELECT id,school_name FROM schools WHERE status='Active' ORDER BY school_name"
+        schools = self.app.lookup_cache.get(
+            "active_schools", lambda: self.db.query(
+                "SELECT id,school_name FROM schools WHERE status='Active' ORDER BY school_name"
+            )
         )
         self.school_names = {int(row["id"]): row["school_name"] for row in schools}
         self.school_map = {

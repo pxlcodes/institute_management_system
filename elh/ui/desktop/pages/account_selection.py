@@ -18,8 +18,11 @@ class AccountSelectionMixin:
     account_map: dict[str, int]
 
     def load_accounts_into(self, combo: ttk.Combobox) -> None:
-        rows = self.db.query(
-            "SELECT id, account_name FROM accounts WHERE status='Active' ORDER BY account_name"
+        rows = self.app.lookup_cache.get(
+            "active_accounts",
+            lambda: self.db.query(
+                "SELECT id, account_name FROM accounts WHERE status='Active' ORDER BY account_name"
+            ),
         )
         self.account_map = {f"{r['id']} - {r['account_name']}": r["id"] for r in rows}
         combo["values"] = list(self.account_map)
@@ -31,7 +34,9 @@ class AccountSelectionMixin:
         return account_id
 
     def require_sufficient_balance(self, account_id: int, amount: float) -> None:
-        if self.app.app_config.allow_negative_balance:
+        if self.app.runtime_settings.get_bool(
+            "allow_negative_balance", self.app.app_config.allow_negative_balance
+        ):
             return
         balance = self.db.account_balance(account_id)
         if balance < amount:
@@ -42,4 +47,3 @@ class AccountSelectionMixin:
 
 # ---------------------------------------------------------------------------
 # Student Transactions
-

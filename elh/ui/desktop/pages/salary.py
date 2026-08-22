@@ -318,8 +318,10 @@ class SalaryPage(CrudPage, AccountSelectionMixin, PaymentProofMixin):
         self.net_label.config(text="Net Salary: 0.00")
 
     def refresh(self):
-        rows = self.db.query(
-            "SELECT id, teacher_name FROM teachers WHERE status='Active' ORDER BY teacher_name"
+        rows = self.app.lookup_cache.get(
+            "active_staff", lambda: self.db.query(
+                "SELECT id, teacher_name FROM teachers WHERE status='Active' ORDER BY teacher_name"
+            )
         )
         self.teacher_map = {f"{r['id']} - {r['teacher_name']}": r["id"] for r in rows}
         self.teacher_combo["values"] = list(self.teacher_map)

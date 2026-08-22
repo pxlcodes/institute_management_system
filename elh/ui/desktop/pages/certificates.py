@@ -102,7 +102,10 @@ class CertificatesPage(CrudPage):
             return
         self.vars["instructor"].set(
             (row["course_instructor"] or "").strip()
-            or self.app.app_config.certificate_default_instructor
+            or self.app.runtime_settings.get(
+                "certificate_default_instructor",
+                self.app.app_config.certificate_default_instructor,
+            )
         )
         self.vars["principal"].set(
             (row["company_principal"] or "").strip() or self._company_principal()
@@ -138,7 +141,10 @@ class CertificatesPage(CrudPage):
         )
         return (
             str(row["principal_name"] or "").strip() if row else ""
-        ) or self.app.app_config.certificate_default_principal
+        ) or self.app.runtime_settings.get(
+            "certificate_default_principal",
+            self.app.app_config.certificate_default_principal,
+        )
 
     def issue(self):
         try:

@@ -180,15 +180,28 @@ class CrudPage(BasePage):
         parent.rowconfigure(1, weight=1)
         parent.columnconfigure(0, weight=1)
         original_insert, original_delete = tree.insert, tree.delete
+        filter_job = None
+        def schedule_filter(*_args):
+            """Coalesce bulk table updates into one filter pass.
+
+            Page refreshes insert many rows synchronously.  Filtering on each
+            insert caused an O(n²) repaint for large attendance lists.
+            """
+            nonlocal filter_job
+            if filter_job is None:
+                filter_job = tree.after_idle(run_filter)
+
         def tracked_insert(parent_iid, index, iid=None, **kw):
             if not kw.get("tags"): kw["tags"]=("even" if len(all_items)%2==0 else "odd",)
-            created = original_insert(parent_iid, index, iid=iid, **kw); all_items.append(created); apply_filter(); return created
+            created = original_insert(parent_iid, index, iid=iid, **kw); all_items.append(created); schedule_filter(); return created
         def tracked_delete(*items):
             for item in items:
                 if item in all_items: all_items.remove(item)
-            result = original_delete(*items); apply_filter(); return result
+            result = original_delete(*items); schedule_filter(); return result
         tree.insert, tree.delete = tracked_insert, tracked_delete
-        def apply_filter(*_args):
+        def run_filter():
+            nonlocal filter_job
+            filter_job = None
             query = search_var.get().strip().casefold()
             selected_key = next((key for key, heading in headings.items() if heading == filter_var.get()), None)
             shown = 0
@@ -198,8 +211,9 @@ class CrudPage(BasePage):
                     tree.reattach(iid, "", "end"); shown += 1
                 else: tree.detach(iid)
             count_var.set(f"{shown} record{'s' if shown != 1 else ''}")
-        search_var.trace_add("write", apply_filter)
-        filter_combo.bind("<<ComboboxSelected>>", apply_filter)
+        apply_filter = schedule_filter
+        search_var.trace_add("write", schedule_filter)
+        filter_combo.bind("<<ComboboxSelected>>", schedule_filter)
         ttk.Button(search_row, text="Clear", command=lambda: search_var.set("")).pack(side="left", padx=6)
         tree.search_var, tree.filter_var = search_var, filter_var
         tree.bind("<Return>", lambda _event: tree.event_generate("<Double-1>"), add="+")

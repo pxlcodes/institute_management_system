@@ -34,6 +34,8 @@ from elh.ui.admin import AdminPanel
 from elh.config import AppConfig, load_config
 from elh.core.backup import BackupError, BackupService
 from elh.core.logging_config import configure_logging, install_exception_hooks
+from elh.core.cache import LookupCache
+from elh.core.settings import SettingsService
 from elh.infrastructure import create_database
 from elh.repositories import DatabaseGateway
 from elh.services import AuthService, ServiceContainer
@@ -63,11 +65,17 @@ class ManagementApp(tk.Tk):
         # Do not use ``self.config`` here: Tk defines config() as a widget method.
         self.app_config = config or load_config()
         self.configure(background="#EEF3F8")
-        self.title(self.app_config.app_title)
-        self.geometry(f"{self.app_config.window_width}x{self.app_config.window_height}")
-        self.minsize(self.app_config.min_window_width, self.app_config.min_window_height)
         self.db = db or create_database(self.app_config)
+        self.lookup_cache = LookupCache()
         self.services = ServiceContainer.build(self.app_config, self.db)
+        self.runtime_settings = SettingsService(self.db)
+        self.title(self.runtime_settings.get("app_title", self.app_config.app_title))
+        width = self.runtime_settings.get_int("window_width", self.app_config.window_width)
+        height = self.runtime_settings.get_int("window_height", self.app_config.window_height)
+        min_width = self.runtime_settings.get_int("min_window_width", self.app_config.min_window_width)
+        min_height = self.runtime_settings.get_int("min_window_height", self.app_config.min_window_height)
+        self.geometry(f"{max(800, width)}x{max(600, height)}")
+        self.minsize(max(800, min_width), max(600, min_height))
         self.auth_service = AuthService(self.db, self.app_config)
         self.auth_service.ensure_initial_users()
         self._idle_after_id = None
@@ -436,13 +444,20 @@ class ManagementApp(tk.Tk):
             self.pages["Tasks & Bugs"].report_bug()
 
     def refresh_all(self):
-        for page in self.pages.values():
+        """Refresh the current screen only; hidden screens refresh on navigation.
+
+        Rebuilding every table after an edit made the interface increasingly
+        slow as data grew.  Lookup data is invalidated first so the current
+        form still receives up-to-date choices.
+        """
+        self.lookup_cache.clear()
+        page = self._active_page()
+        if page is not None:
             try:
                 page.refresh()
             except Exception:
                 logging.getLogger(__name__).exception(
-                    "Refresh failed for %s", type(page).__name__
-                )
+                    "Refresh failed for %s", type(page).__name__)
 
     def _record_activity(self, _event=None):
         self._arm_idle_lock()
@@ -457,7 +472,9 @@ class ManagementApp(tk.Tk):
 
     def _arm_idle_lock(self):
         self._cancel_idle_lock()
-        minutes = self.app_config.session_idle_minutes
+        minutes = self.runtime_settings.get_int(
+            "session_idle_minutes", self.app_config.session_idle_minutes
+        )
         if minutes <= 0 or self._session_transitioning or not getattr(self, "session", None):
             return
         self._idle_after_id = self.after(minutes * 60 * 1000, self._auto_lock)

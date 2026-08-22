@@ -6,7 +6,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Callable
 
-from elh.config import AppConfig, DEFAULT_ENV_FILE, EDITABLE_ENV_KEYS, load_config, write_env
+from elh.config import AppConfig, DEFAULT_ENV_FILE, ENVIRONMENT_ONLY_KEYS, load_config, write_env
 from elh.core.health import HealthService
 from elh.core.settings import SettingsService
 from elh.ui.user_management import UserManagementFrame
@@ -327,7 +327,7 @@ class AdminPanel(tk.Toplevel):
     def _build_config(self) -> None:
         ttk.Label(
             self.config_tab,
-            text="Values are stored in .env and take effect after restarting the application.",
+            text="Only infrastructure, local paths, hardware connections, and SMS secrets are stored in .env. Normal operation is configured in Application Settings.",
         ).pack(anchor="w", pady=(0, 10))
         canvas = tk.Canvas(self.config_tab, highlightthickness=0)
         scrollbar = ttk.Scrollbar(self.config_tab, orient="vertical", command=canvas.yview)
@@ -347,8 +347,7 @@ class AdminPanel(tk.Toplevel):
             "maintenance_username", "maintenance_password",
         }
         editable_fields = [
-            field_name
-            for field_name in EDITABLE_ENV_KEYS
+            field_name for field_name in ENVIRONMENT_ONLY_KEYS
             if field_name not in bootstrap_login_fields
         ]
         for row, field_name in enumerate(editable_fields):
@@ -360,7 +359,7 @@ class AdminPanel(tk.Toplevel):
             entry.grid(row=row, column=1, sticky="ew", padx=4, pady=4)
             self.config_vars[field_name] = variable
         form.columnconfigure(1, weight=1)
-        ttk.Button(form, text="Save .env Configuration", command=self.save_config).grid(
+        ttk.Button(form, text="Save Environment Configuration", command=self.save_config).grid(
             row=len(editable_fields), column=1, sticky="e", padx=4, pady=12
         )
 
@@ -371,7 +370,7 @@ class AdminPanel(tk.Toplevel):
         self.setting_key = tk.StringVar()
         self.setting_value = tk.StringVar()
         ttk.Label(editor, text="Category").grid(row=0, column=0, sticky="w")
-        ttk.Combobox(editor,textvariable=self.setting_category,values=("General","Certificates","Notifications","Reports"),width=18).grid(row=1,column=0,padx=(0,6))
+        ttk.Combobox(editor,textvariable=self.setting_category,values=("Application","Finance","Attendance","General","Certificates","Notifications","Reports"),width=18).grid(row=1,column=0,padx=(0,6))
         ttk.Label(editor, text="Key").grid(row=0, column=1, sticky="w")
         ttk.Entry(editor, textvariable=self.setting_key, width=26).grid(row=1, column=1, padx=(0, 6))
         ttk.Label(editor, text="Value").grid(row=0, column=2, sticky="w")
@@ -425,6 +424,10 @@ class AdminPanel(tk.Toplevel):
                 if services is not None:
                     services.billing.currency_symbol = self.setting_value.get().strip()
                     services.reports.currency_symbol = self.setting_value.get().strip()
+            if self.setting_key.get().strip() == "app_title":
+                self.parent_app.title(self.setting_value.get().strip() or self.app_config.app_title)
+            if self.setting_key.get().strip() == "session_idle_minutes":
+                self.parent_app._arm_idle_lock()
             self.refresh_runtime()
         except (ValueError, OSError) as exc:
             messagebox.showerror("Setting Error", str(exc), parent=self)

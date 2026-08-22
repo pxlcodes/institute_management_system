@@ -2,10 +2,75 @@
 
 from __future__ import annotations
 
+from time import monotonic
 from typing import Protocol
 
 
 DEFAULT_SETTINGS = (
+    (
+        "app_title",
+        "Expert Learning Hub Management System",
+        "Application",
+        "Application Title",
+        "text",
+        "Name shown in the desktop application title bar.",
+    ),
+    (
+        "session_idle_minutes",
+        "20",
+        "Application",
+        "Auto-lock After (minutes)",
+        "integer",
+        "Lock the application after this much inactivity. Set 0 to disable auto-lock.",
+    ),
+    (
+        "window_width",
+        "1420",
+        "Application",
+        "Window Width",
+        "integer",
+        "Preferred application window width in pixels.",
+    ),
+    (
+        "window_height",
+        "860",
+        "Application",
+        "Window Height",
+        "integer",
+        "Preferred application window height in pixels.",
+    ),
+    (
+        "min_window_width",
+        "1100",
+        "Application",
+        "Minimum Window Width",
+        "integer",
+        "Smallest supported application width in pixels.",
+    ),
+    (
+        "min_window_height",
+        "700",
+        "Application",
+        "Minimum Window Height",
+        "integer",
+        "Smallest supported application height in pixels.",
+    ),
+    (
+        "allow_negative_balance",
+        "false",
+        "Finance",
+        "Allow Negative Account Balance",
+        "boolean",
+        "Allow payments and expenses that exceed the selected account balance.",
+    ),
+    (
+        "health_stale_backup_hours",
+        "168",
+        "Application",
+        "Backup Stale After (hours)",
+        "integer",
+        "Show a health warning when the latest verified backup is older than this.",
+    ),
     (
         "currency_symbol",
         "Rs.",
@@ -21,6 +86,22 @@ DEFAULT_SETTINGS = (
         "Certificate Number Prefix",
         "text",
         "Prefix used when generating the next certificate number.",
+    ),
+    (
+        "certificate_default_instructor",
+        "",
+        "Certificates",
+        "Default Instructor",
+        "text",
+        "Used only when a course does not have an assigned instructor.",
+    ),
+    (
+        "certificate_default_principal",
+        "",
+        "Certificates",
+        "Default Principal",
+        "text",
+        "Used only when the company profile has no principal name.",
     ),
     (
         "certificate_pdf_title",
@@ -123,10 +204,29 @@ class SettingsService:
     def __init__(self, store: SettingsStore):
         self.store = store
 
+    def _cached_values(self) -> dict[str, str]:
+        """Share one short-lived settings cache across services using this DB."""
+        entry = getattr(self.store, "_elh_settings_cache", None)
+        now = monotonic()
+        if entry and entry[0] > now:
+            return entry[1]
+        values = {
+            row["setting_key"]: row["setting_value"] or ""
+            for row in self.store.query(
+                "SELECT setting_key, setting_value FROM settings ORDER BY setting_key"
+            )
+        }
+        setattr(self.store, "_elh_settings_cache", (now + 15.0, values))
+        return values
+
+    def _invalidate_cache(self) -> None:
+        try:
+            delattr(self.store, "_elh_settings_cache")
+        except AttributeError:
+            pass
+
     def all(self) -> dict[str, str]:
-        return {row["setting_key"]: row["setting_value"] or "" for row in self.store.query(
-            "SELECT setting_key, setting_value FROM settings ORDER BY setting_key"
-        )}
+        return dict(self._cached_values())
 
     def rows(self):
         return self.store.query(
@@ -147,6 +247,7 @@ class SettingsService:
                 "VALUES (?,?,?,?,?,?)",
                 values,
             )
+            self._invalidate_cache()
         self.store.executemany(
             "UPDATE settings SET category=?,setting_label=?,data_type=?,description=? "
             "WHERE setting_key=?",
@@ -157,10 +258,7 @@ class SettingsService:
         )
 
     def get(self, key: str, default: str = "") -> str:
-        rows = self.store.query(
-            "SELECT setting_value FROM settings WHERE setting_key=?", (key,)
-        )
-        return str(rows[0]["setting_value"] or "") if rows else default
+        return str(self._cached_values().get(key, default))
 
     def get_bool(self, key: str, default: bool = False) -> bool:
         value = self.get(key, "true" if default else "false")
@@ -212,6 +310,8 @@ class SettingsService:
                     description.strip(),
                 ),
             )
+        self._invalidate_cache()
 
     def delete(self, key: str) -> None:
         self.store.execute("DELETE FROM settings WHERE setting_key = ?", (key,))
+        self._invalidate_cache()

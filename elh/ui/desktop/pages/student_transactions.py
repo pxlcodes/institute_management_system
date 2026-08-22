@@ -86,7 +86,11 @@ class StudentTransactionsPage(CrudPage, AccountSelectionMixin, PaymentProofMixin
         self.add_payment_proof_buttons(self)
 
     def load_students(self):
-        rows = self.db.query("SELECT id, student_name FROM students ORDER BY student_name")
+        rows = self.app.lookup_cache.get(
+            "all_students", lambda: self.db.query(
+                "SELECT id, student_name FROM students ORDER BY student_name"
+            )
+        )
         self.student_map = {f"{r['id']} - {r['student_name']}": r["id"] for r in rows}
         self.student_combo["values"] = list(self.student_map)
 

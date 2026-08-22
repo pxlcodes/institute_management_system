@@ -118,12 +118,18 @@ class CertificateService:
         instructor_name = (
             request.instructor_name.strip()
             or str(enrollment["course_instructor"] or "").strip()
-            or self.config.certificate_default_instructor.strip()
+            or self.settings.get(
+                "certificate_default_instructor",
+                self.config.certificate_default_instructor,
+            ).strip()
         )
         principal_name = (
             request.principal_name.strip()
             or str(enrollment["company_principal"] or "").strip()
-            or self.config.certificate_default_principal.strip()
+            or self.settings.get(
+                "certificate_default_principal",
+                self.config.certificate_default_principal,
+            ).strip()
         )
         if not instructor_name:
             raise ValueError("Course instructor is required.")

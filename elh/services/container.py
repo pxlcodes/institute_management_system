@@ -38,10 +38,23 @@ class ServiceContainer:
             row["setting_key"] for row in db.query("SELECT setting_key FROM settings")
         }
         settings.ensure_defaults()
-        if "currency_symbol" not in existing_settings:
-            settings.set("currency_symbol", config.currency_symbol)
-        if "certificate_number_prefix" not in existing_settings:
-            settings.set("certificate_number_prefix", config.certificate_number_prefix)
+        runtime_defaults = {
+            "app_title": config.app_title,
+            "currency_symbol": config.currency_symbol,
+            "certificate_number_prefix": config.certificate_number_prefix,
+            "certificate_default_instructor": config.certificate_default_instructor,
+            "certificate_default_principal": config.certificate_default_principal,
+            "session_idle_minutes": str(config.session_idle_minutes),
+            "window_width": str(config.window_width),
+            "window_height": str(config.window_height),
+            "min_window_width": str(config.min_window_width),
+            "min_window_height": str(config.min_window_height),
+            "allow_negative_balance": str(config.allow_negative_balance).lower(),
+            "health_stale_backup_hours": str(config.health_stale_backup_hours),
+        }
+        for key, value in runtime_defaults.items():
+            if key not in existing_settings:
+                settings.set(key, value)
         profile = db.query_one(
             "SELECT company_name,principal_name FROM company_profile WHERE id=1"
         )

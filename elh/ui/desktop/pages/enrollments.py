@@ -88,10 +88,18 @@ class EnrollmentsPage(CrudPage,ImportTemplateMixin):
         ])
 
     def load_students(self):
-        rows = self.db.query("SELECT id, student_name FROM students ORDER BY student_name")
+        rows = self.app.lookup_cache.get(
+            "all_students", lambda: self.db.query(
+                "SELECT id, student_name FROM students ORDER BY student_name"
+            )
+        )
         self.student_map = {f"{r['id']} - {r['student_name']}": r["id"] for r in rows}
         self.student_combo["values"] = list(self.student_map)
-        courses=self.db.query("SELECT id,course_name,category FROM courses WHERE status='Active' ORDER BY category,course_name")
+        courses = self.app.lookup_cache.get(
+            "active_courses", lambda: self.db.query(
+                "SELECT id,course_name,category FROM courses WHERE status='Active' ORDER BY category,course_name"
+            )
+        )
         self.course_map={f"{r['course_name']} [{r['category']}]":(r["id"],r["course_name"]) for r in courses}
         self.course_combo["values"]=list(self.course_map)
 

@@ -246,6 +246,22 @@ EDITABLE_ENV_KEYS = {
     "maintenance_password": "ELH_MAINTENANCE_PASSWORD",
 }
 
+# Infrastructure and secrets must remain outside the institution database.  The
+# remaining behaviour is stored in the Application Settings screen and is
+# seeded from these legacy values the first time an existing deployment opens.
+ENVIRONMENT_ONLY_KEYS = {
+    "environment", "database_path", "database_engine", "database_host",
+    "database_port", "database_name", "database_user", "database_password",
+    "backup_directory", "log_directory", "log_level", "log_max_bytes",
+    "log_backup_count", "mysql_dump_path", "mysql_client_path",
+    "certificate_template_path", "certificate_output_directory",
+    "certificate_pdf_background_path", "date_format", "seed_demo_data",
+    "attendance_driver", "zkteco_host", "zkteco_port", "zkteco_password",
+    "zkteco_timeout_seconds", "pos_printer_driver", "pos_printer_host",
+    "pos_printer_port", "pos_printer_chars_per_line", "aakash_sms_token",
+    "aakash_sms_endpoint", "sparrow_sms_token", "sparrow_sms_endpoint",
+}
+
 
 def write_env(updates: Mapping[str, str], env_file: Path | str | None = None) -> None:
     """Update only supported ELH keys while preserving comments and unknown values."""
