@@ -110,7 +110,7 @@ class BasePage(ttk.Frame):
         Primary work stays visible; infrequent import/export and destructive actions remain
         available without making every page look like a row of unrelated buttons.
         """
-        menu_button = ttk.Menubutton(self.page_toolbar, text=f"{label} ▾")
+        menu_button = ttk.Menubutton(self.page_toolbar, text=f"⋯ {label} ▾")
         menu = tk.Menu(menu_button, tearoff=False)
         for caption, callback in actions:
             if callback is None:
@@ -139,7 +139,7 @@ class CrudPage(BasePage):
     def make_tree(self, parent, columns: list[tuple[str, str, int]]) -> ttk.Treeview:
         search_row = ttk.Frame(parent, style="Toolbar.TFrame", padding=(8, 6))
         search_row.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
-        ttk.Label(search_row, text="Search", style="Hint.TLabel").pack(side="left")
+        ttk.Label(search_row, text="⌕ Search", style="Hint.TLabel").pack(side="left")
         search_var = tk.StringVar()
         ttk.Entry(search_row, textvariable=search_var, width=24).pack(side="left", padx=(6, 6))
         ttk.Label(search_row, text="in", style="Hint.TLabel").pack(side="left")
@@ -149,7 +149,7 @@ class CrudPage(BasePage):
             values=["All columns", *headings.values()])
         search_combo.pack(side="left", padx=(4, 12))
 
-        ttk.Label(search_row, text="Filter", style="Hint.TLabel").pack(side="left")
+        ttk.Label(search_row, text="⚲ Filter", style="Hint.TLabel").pack(side="left")
         filter_column_var = tk.StringVar(value="All columns")
         filter_combo = ttk.Combobox(search_row, textvariable=filter_column_var, state="readonly", width=16,
             values=["All columns", *headings.values()])
@@ -158,7 +158,7 @@ class CrudPage(BasePage):
         ttk.Entry(search_row, textvariable=filter_value_var, width=18).pack(side="left", padx=(0, 6))
 
         visible_columns = {key: tk.BooleanVar(value=True) for key, _heading, _width in columns}
-        columns_button = ttk.Menubutton(search_row, text="Columns ▾")
+        columns_button = ttk.Menubutton(search_row, text="☷ Columns ▾")
         columns_menu = tk.Menu(columns_button, tearoff=False)
         def update_visible_columns():
             selected = [key for key, variable in visible_columns.items() if variable.get()]

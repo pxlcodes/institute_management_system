@@ -57,6 +57,22 @@ from elh.ui.desktop.pages import (
 
 # ---------------------------------------------------------------------------
 
+NAV_ICONS = {
+    "Dashboard": "⌂", "Tasks & Bugs": "☑", "Students": "◎",
+    "Enrollments": "▣", "Due Bills": "₹", "Certificates": "★",
+    "Student Accounts": "≋", "Reports": "▤", "Courses": "▧",
+    "Schools": "⌘", "Staff": "♙", "Staff Advances": "↗",
+    "Salary Payouts": "▤", "Income": "↑", "Expenses": "↓",
+    "Accounts": "▣", "Account Transfers": "⇄", "Ledger": "≣",
+    "Attendance Device": "◉", "POS Printer": "▦", "Device Health": "✓",
+}
+
+
+def nav_caption(name: str) -> str:
+    """Use compact glyphs that render reliably in the standard Windows font."""
+    return f"{NAV_ICONS.get(name, '•')}  {name}"
+
+
 class ManagementApp(tk.Tk):
     """Tkinter presentation adapter for the reusable application services."""
 
@@ -195,32 +211,32 @@ class ManagementApp(tk.Tk):
         menu = tk.Menu(self)
         file_menu = tk.Menu(menu, tearoff=0)
         if self.can("backup.manage"):
-            file_menu.add_command(label="Backup Database", command=self.backup_database)
-            file_menu.add_command(label="Restore Database", command=self.restore_database)
+            file_menu.add_command(label="▣  Backup Database", command=self.backup_database)
+            file_menu.add_command(label="↶  Restore Database", command=self.restore_database)
         if self.can("administration.manage"):
-            file_menu.add_command(label="System Administration", command=self.open_admin_panel)
+            file_menu.add_command(label="⚙  System Administration", command=self.open_admin_panel)
             file_menu.add_separator()
-        file_menu.add_command(label="Exit\tCtrl+Q", command=self.on_close)
-        menu.add_cascade(label="File", menu=file_menu)
+        file_menu.add_command(label="×  Exit\tCtrl+Q", command=self.on_close)
+        menu.add_cascade(label="▤  File", menu=file_menu)
 
         session_menu = tk.Menu(menu, tearoff=0)
-        session_menu.add_command(label="Lock\tCtrl+Alt+L", command=self.lock_application)
-        session_menu.add_command(label="Change My Password", command=self.change_own_password)
-        session_menu.add_command(label="Logout\tCtrl+Shift+L", command=self.logout)
-        menu.add_cascade(label="Session", menu=session_menu)
+        session_menu.add_command(label="⊘  Lock\tCtrl+Alt+L", command=self.lock_application)
+        session_menu.add_command(label="⌘  Change My Password", command=self.change_own_password)
+        session_menu.add_command(label="⇥  Logout\tCtrl+Shift+L", command=self.logout)
+        menu.add_cascade(label="◉  Session", menu=session_menu)
 
         help_menu = tk.Menu(menu, tearoff=0)
-        help_menu.add_command(label="Report a Bug\tCtrl+Shift+B", command=self.open_bug_report)
-        help_menu.add_command(label="Keyboard Shortcuts\tF1", command=self.show_keyboard_shortcuts)
-        help_menu.add_command(label="About", command=self.show_about)
-        menu.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="⚑  Report a Bug\tCtrl+Shift+B", command=self.open_bug_report)
+        help_menu.add_command(label="⌨  Keyboard Shortcuts\tF1", command=self.show_keyboard_shortcuts)
+        help_menu.add_command(label="ⓘ  About", command=self.show_about)
+        menu.add_cascade(label="?  Help", menu=help_menu)
         if self.can("billing.manage") or self.can("finance.manage"):
             operations_menu = tk.Menu(menu, tearoff=0)
             if self.can("finance.manage"):
-                operations_menu.add_command(label="Account Transfer", command=lambda: self.show_page("Account Transfers"))
+                operations_menu.add_command(label="⇄  Account Transfer", command=lambda: self.show_page("Account Transfers"))
             if self.can("billing.manage"):
-                operations_menu.add_command(label="Due Bills", command=lambda: self.show_page("Due Bills"))
-            menu.add_cascade(label="Operations", menu=operations_menu)
+                operations_menu.add_command(label="₹  Due Bills", command=lambda: self.show_page("Due Bills"))
+            menu.add_cascade(label="◆  Operations", menu=operations_menu)
         self.config(menu=menu)
 
     def _build_layout(self):
@@ -235,8 +251,8 @@ class ManagementApp(tk.Tk):
                 text=f"{self.session.display_name or self.session.username} | Maintenance",
                 style="HeaderMeta.TLabel",
             ).pack(side="left")
-            ttk.Button(control, text="Lock", command=self.lock_application).pack(side="right", padx=3)
-            ttk.Button(control, text="Logout", command=self.logout).pack(side="right", padx=3)
+            ttk.Button(control, text="⊘ Lock", command=self.lock_application).pack(side="right", padx=3)
+            ttk.Button(control, text="⇥ Logout", command=self.logout).pack(side="right", padx=3)
             MaintenancePanel(shell,self).pack(fill="both",expand=True)
             return
 
@@ -254,11 +270,11 @@ class ManagementApp(tk.Tk):
         workspace.pack(side="left", fill="both", expand=True)
         header = ttk.Frame(workspace, style="Header.TFrame", padding=(22,12))
         header.pack(fill="x")
-        self.page_title = tk.StringVar(value="Dashboard")
+        self.page_title = tk.StringVar(value=nav_caption("Dashboard"))
         ttk.Label(header,textvariable=self.page_title,style="HeaderTitle.TLabel").pack(side="left")
         ttk.Button(header, text="☰ Menu", command=self.toggle_sidebar).pack(side="left", padx=(12, 0))
-        ttk.Button(header,text="Logout",command=self.logout).pack(side="right",padx=(3,0))
-        ttk.Button(header,text="Lock",command=self.lock_application).pack(side="right",padx=3)
+        ttk.Button(header,text="⇥ Logout",command=self.logout).pack(side="right",padx=(3,0))
+        ttk.Button(header,text="⊘ Lock",command=self.lock_application).pack(side="right",padx=3)
         ttk.Label(header,text=f"{self.session.display_name or self.session.username}  |  {self.session.role.title()}",style="HeaderMeta.TLabel").pack(side="right",padx=8)
         ttk.Separator(workspace).pack(fill="x")
         content = ttk.Frame(workspace, padding=(12,8,12,12))
@@ -307,7 +323,7 @@ class ManagementApp(tk.Tk):
             self.nav_groups[group_name] = group_body
             group_button = ttk.Label(
                 sidebar,
-                text=group_name,
+                text=f"◆ {group_name}",
                 style="SidebarGroup.TLabel",
             )
             group_button.pack(fill="x", pady=(10, 2), padx=8)
@@ -317,7 +333,7 @@ class ManagementApp(tk.Tk):
                 page.grid(row=0, column=0, sticky="nsew")
                 self.pages[name] = page
                 self.page_groups[name] = (group_name, group_body, group_button)
-                button=ttk.Button(group_body, text=f"  {name}", style="Sidebar.TButton",
+                button=ttk.Button(group_body, text=f"  {nav_caption(name)}", style="Sidebar.TButton",
                     command=lambda n=name: self.show_page(n), width=22)
                 button.pack(fill="x", pady=1);self.nav_buttons[name]=button
                 if first_page is None:
@@ -326,9 +342,9 @@ class ManagementApp(tk.Tk):
         ttk.Separator(sidebar).pack(fill="x", pady=10)
         ttk.Label(sidebar,text=f"{self.session.username} ({self.session.role.title()})",style="Sidebar.TLabel").pack(anchor="w",padx=8,pady=(2,6))
         if self.can("administration.manage"):
-            ttk.Button(sidebar,text="System Admin",style="Sidebar.TButton",command=self.open_admin_panel).pack(fill="x",pady=2)
+            ttk.Button(sidebar,text="  ⚙  System Admin",style="Sidebar.TButton",command=self.open_admin_panel).pack(fill="x",pady=2)
         if self.can("backup.manage"):
-            ttk.Button(sidebar,text="Backup Database",style="Sidebar.TButton",command=self.backup_database).pack(fill="x",pady=2)
+            ttk.Button(sidebar,text="  ▣  Backup Database",style="Sidebar.TButton",command=self.backup_database).pack(fill="x",pady=2)
 
         if first_page:
             self.show_page(first_page)
@@ -339,7 +355,7 @@ class ManagementApp(tk.Tk):
         page = self.pages[name]
         page.refresh()
         page.tkraise()
-        self.page_title.set(name)
+        self.page_title.set(nav_caption(name))
         for page_name,button in self.nav_buttons.items():
             button.configure(style="SidebarActive.TButton" if page_name==name else "Sidebar.TButton")
 
@@ -359,7 +375,12 @@ class ManagementApp(tk.Tk):
         self.bind_all("<F1>", lambda _event: self._shortcut_help(), add="+")
 
     def _active_page(self):
-        return self.pages.get(self.page_title.get()) if hasattr(self, "pages") else None
+        if not hasattr(self, "pages"):
+            return None
+        return next(
+            (page for name, page in self.pages.items() if nav_caption(name) == self.page_title.get()),
+            None,
+        )
 
     def _shortcut_new(self, _event=None):
         page = self._active_page()
@@ -386,8 +407,9 @@ class ManagementApp(tk.Tk):
     def _shortcut_navigation(self, _event=None):
         if not getattr(self, "_sidebar_visible", False) and hasattr(self, "sidebar_scroll"):
             self.toggle_sidebar()
-        if getattr(self, "nav_buttons", None) and self.page_title.get() in self.nav_buttons:
-            self.nav_buttons[self.page_title.get()].focus_set()
+        active_name = next((name for name in self.nav_buttons if nav_caption(name) == self.page_title.get()), None)
+        if active_name:
+            self.nav_buttons[active_name].focus_set()
         return "break"
 
     def _shortcut_toggle_menu(self):
@@ -398,7 +420,7 @@ class ManagementApp(tk.Tk):
     def _cycle_page(self, direction: int):
         names = list(self.pages)
         if not names: return "break"
-        try: position = names.index(self.page_title.get())
+        try: position = names.index(next(name for name in names if nav_caption(name) == self.page_title.get()))
         except ValueError: position = 0
         self.show_page(names[(position + direction) % len(names)])
         return "break"
