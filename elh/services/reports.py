@@ -118,12 +118,15 @@ class ReportsService:
         row_label = ParagraphStyle(
             "RoutineRowLabel", parent=cell, textColor=colors.white, fontSize=9,
         )
-        table_data = [["CLASS / PERIOD", *[day.upper() for day in days]]]
+        table_data = [["CLASS", "PERIOD", *[day.upper() for day in days]]]
         body_row_colors = []
+        class_spans = []
         for class_name in sorted(grouped, key=class_key):
-            for period in sorted(grouped[class_name], key=period_key):
-                label = f"Grade {escape(class_name)}<br/>{escape(period)} period"
-                values = [Paragraph(label, row_label)]
+            periods = sorted(grouped[class_name], key=period_key)
+            span_start = len(table_data)
+            for period_index, period in enumerate(periods):
+                class_label = Paragraph(f"Grade {escape(class_name)}", row_label) if period_index == 0 else ""
+                values = [class_label, Paragraph(f"{escape(period)}<br/>period", row_label)]
                 for day in days:
                     item = grouped[class_name][period].get(day)
                     if not item:
@@ -138,6 +141,8 @@ class ReportsService:
                     colors.HexColor("#C5E6F5") if len(body_row_colors) % 2 == 0
                     else colors.HexColor("#8AC9E6")
                 )
+            if len(periods) > 1:
+                class_spans.append((span_start, len(table_data) - 1))
 
         suffix = f"_class_{class_level_id}" if class_level_id else "_all_classes"
         output = output or self._path(f"class_routine{suffix}.pdf")
@@ -160,7 +165,9 @@ class ReportsService:
             Paragraph(f"{selected_label} | Printed: {today_iso()} (BS)", sub),
             Spacer(1, 5 * mm),
         ]
-        table = Table(table_data, colWidths=[35 * mm] + [40.3 * mm] * len(days), repeatRows=1)
+        table = Table(
+            table_data, colWidths=[24 * mm, 18 * mm] + [39.1 * mm] * len(days), repeatRows=1
+        )
         table_style = [
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1D6989")),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -168,13 +175,15 @@ class ReportsService:
             ("FONTSIZE", (0, 0), (-1, 0), 9),
             ("ALIGN", (0, 0), (-1, -1), "CENTER"),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("BACKGROUND", (0, 1), (0, -1), colors.HexColor("#1D6989")),
+            ("BACKGROUND", (0, 1), (1, -1), colors.HexColor("#1D6989")),
             ("GRID", (0, 0), (-1, -1), 0.6, colors.white),
             ("TOPPADDING", (0, 0), (-1, -1), 8),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
         ]
         for index, background in enumerate(body_row_colors, start=1):
-            table_style.append(("BACKGROUND", (1, index), (-1, index), background))
+            table_style.append(("BACKGROUND", (2, index), (-1, index), background))
+        for start_row, end_row in class_spans:
+            table_style.append(("SPAN", (0, start_row), (0, end_row)))
         table.setStyle(TableStyle(table_style))
         story.append(table)
 
