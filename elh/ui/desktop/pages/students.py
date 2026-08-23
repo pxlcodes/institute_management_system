@@ -45,6 +45,7 @@ class StudentsPage(CrudPage, ImportTemplateMixin):
         self.attendance_user_map: dict[str, str] = {}
         self.school_map: dict[str, int] = {}
         self.school_names: dict[int, str] = {}
+        self.class_map: dict[str, int] = {}
 
         ttk.Label(self, text="Student Records", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
@@ -57,9 +58,10 @@ class StudentsPage(CrudPage, ImportTemplateMixin):
         form.pack(fill="both", expand=True, pady=8)
         self.vars = self._variables()
         self.new_photo = self._photo_state()
-        self.new_notebook, self.school_combo, self.attendance_combo = self._build_form(
+        self.new_notebook, self.class_combo, self.school_combo, self.attendance_combo = self._build_form(
             form,
             self.vars,
+            [],
             [],
             {},
             self.new_photo,
@@ -147,6 +149,7 @@ class StudentsPage(CrudPage, ImportTemplateMixin):
         container,
         variables: dict[str, tk.StringVar],
         schools,
+        classes,
         attendance_map: dict[str, str],
         photo_state: dict,
     ):
@@ -159,7 +162,9 @@ class StudentsPage(CrudPage, ImportTemplateMixin):
 
         quick_form = FormBuilder(quick)
         quick_form.entry("Student Name *", variables["name"], width=38)
-        quick_form.entry("Class", variables["class"], width=38)
+        class_combo = quick_form.combo(
+            "Class / Level", variables["class"], classes, searchable=True, width=36
+        )
         school_combo = quick_form.combo(
             "School", variables["school"], schools, state="normal", searchable=True, width=36
         )
@@ -197,7 +202,7 @@ class StudentsPage(CrudPage, ImportTemplateMixin):
         details.entry("Remarks", variables["remarks"], width=34)
         optional.columnconfigure(1, weight=1)
         self._add_photo_card(optional, details.row, photo_state)
-        return notebook, school_combo, attendance_combo
+        return notebook, class_combo, school_combo, attendance_combo
 
     def _suggest_relationship(self, variables: dict[str, tk.StringVar]) -> None:
         if variables["relationship"].get().strip():
@@ -315,10 +320,13 @@ class StudentsPage(CrudPage, ImportTemplateMixin):
         school_id = self.school_map.get(school_name) if school_name else None
         if school_name and school_id is None:
             raise ValueError("Select an existing school from the list.")
+        class_name = variables["class"].get().strip()
+        if class_name and class_name not in self.class_map:
+            raise ValueError("Select a class/level from the Class Levels list.")
         return Student(
             id=student_id,
             name=variables["name"].get(),
-            class_name=variables["class"].get().strip(),
+            class_name=class_name,
             school_id=school_id,
             school_name=self.school_names.get(school_id, "") if school_id else "",
             contact=variables["contact"].get(),
@@ -334,6 +342,13 @@ class StudentsPage(CrudPage, ImportTemplateMixin):
             remarks=variables["remarks"].get().strip(),
         )
 
+    def _sync_class_level(self, student_id: int, class_name: str) -> None:
+        """Keep the normalized class relationship aligned with the display name."""
+        self.db.execute(
+            "UPDATE students SET class_level_id=? WHERE id=?",
+            (self.class_map.get(class_name) if class_name else None, student_id),
+        )
+
     def save(self) -> None:
         try:
             student = self._student_from_form(self.vars, self.new_photo)
@@ -341,6 +356,7 @@ class StudentsPage(CrudPage, ImportTemplateMixin):
                 self.vars["attendance"].get(), self.attendance_user_map
             )
             student_id = self.app.services.students.register(student)
+            self._sync_class_level(student_id, student.class_name)
             self.app.services.attendance.assign_person_device(
                 "student", student_id, device_user_id
             )
@@ -431,10 +447,11 @@ class StudentsPage(CrudPage, ImportTemplateMixin):
         dialog.minsize(690, 480)
         frame = ttk.Frame(dialog, padding=12, style="Form.TFrame")
         frame.pack(fill="both", expand=True)
-        notebook, _school_combo, _attendance_combo = self._build_form(
+        notebook, _class_combo, _school_combo, _attendance_combo = self._build_form(
             frame,
             variables,
             list(self.school_map),
+            list(self.class_map),
             attendance_map,
             photo_state,
         )
@@ -450,6 +467,7 @@ class StudentsPage(CrudPage, ImportTemplateMixin):
                     variables["attendance"].get(), attendance_map
                 )
                 self.app.services.students.update(updated)
+                self._sync_class_level(self.selected_id, updated.class_name)
                 self.app.services.attendance.assign_person_device(
                     "student", self.selected_id, device_user_id
                 )
@@ -608,6 +626,13 @@ class StudentsPage(CrudPage, ImportTemplateMixin):
         dialog.grab_set()
 
     def refresh(self) -> None:
+        classes = self.app.lookup_cache.get(
+            "active_class_levels", lambda: self.db.query(
+                "SELECT id,level_name FROM class_levels WHERE status='Active' ORDER BY level_name"
+            )
+        )
+        self.class_map = {str(row["level_name"]): int(row["id"]) for row in classes}
+        self.class_combo.set_values(self.class_map)
         schools = self.app.lookup_cache.get(
             "active_schools", lambda: self.db.query(
                 "SELECT id,school_name FROM schools WHERE status='Active' ORDER BY school_name"
