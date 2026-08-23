@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import csv
+import logging
 import sqlite3
 import tkinter as tk
+import time
 from datetime import date, datetime
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Iterable, Optional
@@ -20,6 +22,9 @@ class DashboardPage(BasePage):
         self.cards = {}
         self.attendance_alerts_by_student = {}
         self.absent_students_by_student = {}
+        self._attendance_cache = None
+        self._attendance_after_id = None
+        self._attendance_generation = 0
         grid = ttk.Frame(self)
         grid.pack(fill="x", pady=(8, 4))
         labels = [
@@ -157,18 +162,60 @@ class DashboardPage(BasePage):
         self.cards["students"].config(text=str(metrics["students"]))
         self.cards["teachers"].config(text=str(metrics["teachers"]))
         self.cards["enrollments"].config(text=str(metrics["enrollments"]))
-        present_students = self.app.services.attendance.students_present_today()
-        absent_students = self.app.services.attendance.students_absent_today()
-        attendance_alerts = self.app.services.attendance.student_attendance_alerts()
-        self.attendance_alerts_by_student = {int(row["student_id"]): row for row in attendance_alerts}
-        self.absent_students_by_student = {int(row["id"]): row for row in absent_students}
-        self.cards["student_present"].config(text=str(len(present_students)))
-        self.cards["attendance_alerts"].config(text=str(len(attendance_alerts)))
         self.cards["student_due"].config(text=money(metrics["student_due"]))
         self.cards["today_income"].config(text=money(float(metrics["today_income"]) + float(metrics["today_student"])))
         self.cards["today_expense"].config(text=money(metrics["today_expense"]))
         self.cards["cash_total"].config(text=money(total_balance))
         self.cards["salary_total"].config(text=money(metrics["salary_total"]))
+
+        CrudPage.clear_tree(self.tree)
+        for row in accounts:
+            self.tree.insert(
+                "", "end",
+                values=(
+                    row["account_name"], row["account_type"], money(row["balance"]), row["status"],
+                ),
+            )
+        self._schedule_attendance_refresh()
+
+    def invalidate_cache(self) -> None:
+        self._attendance_cache = None
+
+    def _schedule_attendance_refresh(self) -> None:
+        """Draw the page first; attendance analysis is the expensive dashboard work."""
+        self._attendance_generation += 1
+        if self._attendance_after_id is not None:
+            try:
+                self.after_cancel(self._attendance_after_id)
+            except tk.TclError:
+                pass
+            self._attendance_after_id = None
+        if self._attendance_cache and time.monotonic() - self._attendance_cache[0] < 15:
+            self._render_attendance(*self._attendance_cache[1:])
+            return
+        generation = self._attendance_generation
+        self._attendance_after_id = self.after(25, lambda: self._load_attendance(generation))
+
+    def _load_attendance(self, generation: int) -> None:
+        self._attendance_after_id = None
+        if generation != self._attendance_generation:
+            return
+        try:
+            present_students = self.app.services.attendance.students_present_today()
+            absent_students = self.app.services.attendance.students_absent_today()
+            attendance_alerts = self.app.services.attendance.student_attendance_alerts()
+            if generation != self._attendance_generation:
+                return
+            self._attendance_cache = (time.monotonic(), present_students, absent_students, attendance_alerts)
+            self._render_attendance(present_students, absent_students, attendance_alerts)
+        except Exception:
+            logging.getLogger(__name__).exception("Dashboard attendance refresh failed")
+
+    def _render_attendance(self, present_students, absent_students, attendance_alerts) -> None:
+        self.attendance_alerts_by_student = {int(row["student_id"]): row for row in attendance_alerts}
+        self.absent_students_by_student = {int(row["id"]): row for row in absent_students}
+        self.cards["student_present"].config(text=str(len(present_students)))
+        self.cards["attendance_alerts"].config(text=str(len(attendance_alerts)))
 
         CrudPage.clear_tree(self.present_tree)
         for row in present_students:
@@ -201,17 +248,6 @@ class DashboardPage(BasePage):
                 row["consecutive_days"], row["monthly_missing_days"], row["review_status"], row["reason"],
             ))
 
-        CrudPage.clear_tree(self.tree)
-        for row in accounts:
-            self.tree.insert(
-                "", "end",
-                values=(
-                    row["account_name"],
-                    row["account_type"],
-                    money(row["balance"]),
-                    row["status"],
-                ),
-            )
 
     @staticmethod
     def _attendance_time(value) -> str:
@@ -257,7 +293,7 @@ class DashboardPage(BasePage):
             try:
                 follow_up = validate_date(values["follow_up"].get(), "Follow-up date", True)
                 self.app.services.attendance.record_attendance_alert_review(student_id, values["status"].get(), values["note"].get(), follow_up, self.app.session.user_id)
-                dialog.destroy(); self.refresh()
+                dialog.destroy(); self.invalidate_cache(); self.refresh()
             except Exception as exc:
                 messagebox.showerror("Attendance Review", str(exc), parent=dialog)
         ttk.Button(shell, text="Save Review", style="Accent.TButton", command=save_review).pack(anchor="e", pady=(12, 0))

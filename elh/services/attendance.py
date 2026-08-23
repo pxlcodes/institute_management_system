@@ -167,18 +167,24 @@ class AttendanceService:
         start_at, end_at, calendar_days = self._month_range(salary_month, "Salary month")
         start_date = datetime.fromisoformat(start_at).date()
         end_date = datetime.fromisoformat(end_at).date()
+        routine_rows = self.repository.db.query(
+            "SELECT r.day_of_week,p.effective_from,p.effective_to FROM class_routines r "
+            "JOIN routine_plans p ON p.id=r.routine_plan_id "
+            "WHERE r.teacher_id=? AND r.status='Active'",
+            (int(staff_id),),
+        )
         routine_days: list[str] = []
         periods = 0
         for offset in range((end_date - start_date).days + 1):
             current_date = start_date + timedelta(days=offset)
             day_name = self._day_name(current_date)
             business_date = self._business_date_from_ad(current_date)
-            rows = self.repository.db.query(
-                "SELECT r.day_of_week FROM class_routines r JOIN routine_plans p ON p.id=r.routine_plan_id "
-                "WHERE r.teacher_id=? AND r.status='Active' AND r.day_of_week=? "
-                "AND p.effective_from<=? AND (p.effective_to IS NULL OR p.effective_to>?)",
-                (int(staff_id), day_name, business_date, business_date),
-            )
+            rows = [
+                row for row in routine_rows
+                if row["day_of_week"] == day_name
+                and row["effective_from"] <= business_date
+                and (not row["effective_to"] or row["effective_to"] > business_date)
+            ]
             periods += len(rows)
             routine_days.extend(str(row["day_of_week"]) for row in rows)
         return {"scheduled_classes": periods, "routine_days": sorted(set(routine_days)), "calendar_days": calendar_days}
@@ -187,21 +193,27 @@ class AttendanceService:
     def _day_name(value) -> str:
         return ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")[value.weekday()]
 
-    def _working_dates_for_class(self, class_name: str, start_date, end_date) -> list:
+    def _working_dates_for_class(
+        self, class_name: str, start_date, end_date, routine_rows: list[dict] | None = None,
+    ) -> list:
         if not class_name or end_date < start_date:
             return []
+        if routine_rows is None:
+            routine_rows = self.repository.db.query(
+                "SELECT r.day_of_week,p.effective_from,p.effective_to FROM class_routines r "
+                "JOIN routine_plans p ON p.id=r.routine_plan_id "
+                "WHERE r.class_name=? AND r.status='Active'",
+                (class_name,),
+            )
         working_dates = []
         for offset in range((end_date - start_date).days + 1):
             current_date = start_date + timedelta(days=offset)
             business_date = self._business_date_from_ad(current_date)
-            if self.repository.db.query_one(
-                "SELECT 1 FROM class_routines r JOIN routine_plans p ON p.id=r.routine_plan_id "
-                "WHERE r.class_name=? AND r.status='Active' AND r.day_of_week=? "
-                "AND p.effective_from<=? AND (p.effective_to IS NULL OR p.effective_to>?) LIMIT 1",
-                (
-                    class_name, self._day_name(current_date),
-                    business_date, business_date,
-                ),
+            if any(
+                row["day_of_week"] == self._day_name(current_date)
+                and row["effective_from"] <= business_date
+                and (not row["effective_to"] or row["effective_to"] > business_date)
+                for row in routine_rows
             ):
                 working_dates.append(current_date)
         return working_dates
@@ -288,6 +300,14 @@ class AttendanceService:
             "WHERE r.id IN (SELECT MAX(id) FROM attendance_alert_reviews GROUP BY student_id)"
         )
         reviews = {int(row["student_id"]): row for row in review_rows}
+        routine_rows = self.repository.db.query(
+            "SELECT r.class_name,r.day_of_week,p.effective_from,p.effective_to "
+            "FROM class_routines r JOIN routine_plans p ON p.id=r.routine_plan_id "
+            "WHERE r.status='Active'"
+        )
+        routines_by_class: dict[str, list[dict]] = defaultdict(list)
+        for routine in routine_rows:
+            routines_by_class[str(routine["class_name"] or "")].append(routine)
         alerts = []
         month_start_ad = datetime.fromisoformat(start_at).date()
         for row in rows:
@@ -298,7 +318,10 @@ class AttendanceService:
             if enrollment_start > today_ad:
                 continue
             relevant_month_start = max(month_start_ad, enrollment_start)
-            working_dates = self._working_dates_for_class(row["class_name"] or "", enrollment_start, today_ad)
+            working_dates = self._working_dates_for_class(
+                row["class_name"] or "", enrollment_start, today_ad,
+                routines_by_class.get(row["class_name"] or "", []),
+            )
             if not working_dates:
                 continue
             present = monthly_punches.get(int(row["id"]), set())

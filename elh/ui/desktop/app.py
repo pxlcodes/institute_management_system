@@ -481,6 +481,9 @@ class ManagementApp(tk.Tk):
         form still receives up-to-date choices.
         """
         self.lookup_cache.clear()
+        dashboard = self.pages.get("Dashboard") if hasattr(self, "pages") else None
+        if dashboard is not None and hasattr(dashboard, "invalidate_cache"):
+            dashboard.invalidate_cache()
         page = self._active_page()
         if page is not None:
             try:
