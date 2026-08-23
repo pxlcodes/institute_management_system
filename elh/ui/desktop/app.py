@@ -54,6 +54,7 @@ from elh.ui.desktop.pages import (
     CertificatesPage,
     WorkItemsPage,
     RoutinesPage,
+    GradesPage,
 )
 
 # ---------------------------------------------------------------------------
@@ -67,6 +68,7 @@ NAV_ICONS = {
     "Accounts": "🏦", "Account Transfers": "🔄", "Ledger": "📒",
     "Attendance Device": "🕒", "POS Printer": "🖨", "Device Health": "🩺",
     "Class Routine": "🗓",
+    "Grades": "🔢",
 }
 
 
@@ -296,6 +298,7 @@ class ManagementApp(tk.Tk):
                 ("Certificates", CertificatesPage, "certificates.manage"),
                 ("Student Accounts", StudentTransactionsPage, "billing.manage"),
                 ("Courses", CoursesPage, "master_data.manage"),
+                ("Grades", GradesPage, "master_data.manage"),
                 ("Class Routine", RoutinesPage, "master_data.manage"),
                 ("Schools", SchoolsPage, "master_data.manage"),
             ]),

@@ -36,7 +36,9 @@ ROUTINE_VERSION = 11
 ROUTINE_NAME = "add academic routines and per-period payroll reference"
 CLASS_LEVEL_VERSION = 12
 CLASS_LEVEL_NAME = "normalize class levels and preload supplied weekly routine"
-LATEST_SCHEMA_VERSION = CLASS_LEVEL_VERSION
+GRADE_VERSION = 13
+GRADE_NAME = "add grade master records and link existing class levels"
+LATEST_SCHEMA_VERSION = GRADE_VERSION
 
 
 INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
@@ -195,6 +197,7 @@ def normalize_mysql_schema(db) -> None:
         ensure_mysql_staff_account_migration(db)
         ensure_mysql_routine_migration(db)
         ensure_mysql_class_level_migration(db)
+        ensure_mysql_grade_migration(db)
         ensure_mysql_indexes(db)
         ensure_mysql_bill_month_guard(db)
         ensure_mysql_certificate_migration(db)
@@ -244,6 +247,7 @@ def normalize_mysql_schema(db) -> None:
     ensure_mysql_staff_account_migration(db)
     ensure_mysql_routine_migration(db)
     ensure_mysql_class_level_migration(db)
+    ensure_mysql_grade_migration(db)
     ensure_mysql_indexes(db)
     ensure_mysql_bill_month_guard(db)
     ensure_mysql_certificate_migration(db)
@@ -530,6 +534,18 @@ def ensure_mysql_class_level_migration(db) -> None:
         db.execute("INSERT INTO schema_migrations (version,migration_name) VALUES (?,?)", (CLASS_LEVEL_VERSION, CLASS_LEVEL_NAME))
 
 
+def ensure_mysql_grade_migration(db) -> None:
+    db.execute("CREATE TABLE IF NOT EXISTS grades (id INTEGER AUTO_INCREMENT PRIMARY KEY,short_name VARCHAR(50) NOT NULL UNIQUE,grade_name VARCHAR(150) NOT NULL UNIQUE,status VARCHAR(30) NOT NULL DEFAULT 'Active',remarks TEXT,created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB")
+    for table in ("students", "class_routines"):
+        if not _mysql_column_exists(db, table, "grade_id"):
+            db.execute(f"ALTER TABLE {table} ADD COLUMN grade_id INTEGER NULL")
+    db.execute("INSERT IGNORE INTO grades (short_name,grade_name) SELECT level_name,CONCAT('Grade ',level_name) FROM class_levels")
+    db.execute("UPDATE students s JOIN class_levels cl ON cl.id=s.class_level_id JOIN grades g ON g.short_name=cl.level_name SET s.grade_id=g.id WHERE s.grade_id IS NULL")
+    db.execute("UPDATE class_routines r JOIN class_levels cl ON cl.id=r.class_level_id JOIN grades g ON g.short_name=cl.level_name SET r.grade_id=g.id WHERE r.grade_id IS NULL")
+    if not db.query_one("SELECT version FROM schema_migrations WHERE version=?", (GRADE_VERSION,)):
+        db.execute("INSERT INTO schema_migrations (version,migration_name) VALUES (?,?)", (GRADE_VERSION, GRADE_NAME))
+
+
 def ensure_mysql_bill_month_guard(db) -> None:
     """Enforce the cross-table bill-month rule without a redundant column."""
     definitions = {
@@ -712,6 +728,10 @@ def normalize_sqlite_schema(path) -> None:
               status TEXT NOT NULL DEFAULT 'Active',remarks TEXT,
               created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS grades (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,short_name TEXT NOT NULL UNIQUE,grade_name TEXT NOT NULL UNIQUE,
+              status TEXT NOT NULL DEFAULT 'Active',remarks TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
         if "class_count" not in _sqlite_columns(connection, "salary_payouts"):
@@ -720,11 +740,17 @@ def normalize_sqlite_schema(path) -> None:
             connection.execute("ALTER TABLE students ADD COLUMN class_level_id INTEGER")
         if "class_level_id" not in _sqlite_columns(connection, "class_routines"):
             connection.execute("ALTER TABLE class_routines ADD COLUMN class_level_id INTEGER")
+        for table in ("students", "class_routines"):
+            if "grade_id" not in _sqlite_columns(connection, table):
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN grade_id INTEGER")
         connection.execute("INSERT OR IGNORE INTO class_levels (level_name) SELECT DISTINCT class_name FROM students WHERE class_name IS NOT NULL AND class_name<>''")
         for level in ("8", "9", "10", "12"):
             connection.execute("INSERT OR IGNORE INTO class_levels (level_name) VALUES (?)", (level,))
         connection.execute("UPDATE students SET class_level_id=(SELECT id FROM class_levels WHERE level_name=students.class_name) WHERE class_level_id IS NULL")
         connection.execute("UPDATE class_routines SET class_level_id=(SELECT id FROM class_levels WHERE level_name=class_routines.class_name) WHERE class_level_id IS NULL")
+        connection.execute("INSERT OR IGNORE INTO grades (short_name,grade_name) SELECT level_name,'Grade ' || level_name FROM class_levels")
+        connection.execute("UPDATE students SET grade_id=(SELECT g.id FROM grades g JOIN class_levels cl ON cl.level_name=g.short_name WHERE cl.id=students.class_level_id) WHERE grade_id IS NULL")
+        connection.execute("UPDATE class_routines SET grade_id=(SELECT g.id FROM grades g JOIN class_levels cl ON cl.level_name=g.short_name WHERE cl.id=class_routines.class_level_id) WHERE grade_id IS NULL")
         if connection.execute("SELECT COUNT(*) FROM class_routines").fetchone()[0] == 0:
             for level, day, period, subject in _routine_seed_rows():
                 class_id = connection.execute("SELECT id FROM class_levels WHERE level_name=?", (level,)).fetchone()[0]
@@ -847,6 +873,7 @@ def normalize_sqlite_schema(path) -> None:
             "INSERT OR IGNORE INTO schema_migrations (version,migration_name) VALUES (?,?)",
             (CLASS_LEVEL_VERSION, CLASS_LEVEL_NAME),
         )
+        connection.execute("INSERT OR IGNORE INTO schema_migrations (version,migration_name) VALUES (?,?)", (GRADE_VERSION, GRADE_NAME))
         connection.commit()
     except Exception:
         connection.rollback()

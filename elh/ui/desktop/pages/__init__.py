@@ -18,9 +18,10 @@ from .devices import DeviceHealthPage, PosPrinterPage
 from .certificates import CertificatesPage
 from .work_items import WorkItemsPage
 from .routines import RoutinesPage
+from .grades import GradesPage
 
 __all__ = [
     "AccountsPage", "AdvancesPage", "DashboardPage", "EnrollmentsPage",
     "ExpensePage", "IncomePage", "LedgerPage", "SalaryPage",
-    "StudentTransactionsPage", "StudentsPage", "TeachersPage", "TransfersPage", "CoursesPage", "SchoolsPage", "DueBillsPage", "ReportsPage", "AttendancePage", "DeviceHealthPage", "PosPrinterPage", "CertificatesPage", "WorkItemsPage", "RoutinesPage",
+    "StudentTransactionsPage", "StudentsPage", "TeachersPage", "TransfersPage", "CoursesPage", "SchoolsPage", "DueBillsPage", "ReportsPage", "AttendancePage", "DeviceHealthPage", "PosPrinterPage", "CertificatesPage", "WorkItemsPage", "RoutinesPage", "GradesPage",
 ]
