@@ -56,7 +56,10 @@ class ReportsService:
         data = [["Class / Level", r["label"], r["total"]] for r in classes] + [["School", r["label"], r["total"]] for r in schools]
         return self._build(output or self._path("student_class_school_analysis.pdf"), "STUDENT COUNT ANALYSIS", "Current", "Current", ["Group","Class / School","Students"], data, ["","TOTAL STUDENTS",str(sum(int(r["total"]) for r in classes))])
 
-    def routine_pdf(self, class_level_id: int | None = None, output: Path | None = None) -> Path:
+    def routine_pdf(
+        self, class_level_id: int | None = None, output: Path | None = None,
+        routine_plan_id: int | None = None,
+    ) -> Path:
         """Render the routine as a day-by-day timetable, not a transaction list."""
         from xml.sax.saxutils import escape
         from reportlab.lib import colors
@@ -67,13 +70,19 @@ class ReportsService:
 
         days = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday")
         where, params = "WHERE r.status='Active'", ()
+        if routine_plan_id:
+            where += " AND r.routine_plan_id=?"
+            params += (int(routine_plan_id),)
+        else:
+            where += " AND p.status='Active'"
         if class_level_id:
             where += " AND r.class_level_id=?"
-            params = (int(class_level_id),)
+            params += (int(class_level_id),)
         rows = self.db.query(
             "SELECT COALESCE(cl.level_name,r.class_name) class_name,r.day_of_week,"
             "r.period_label,r.subject_name,COALESCE(t.teacher_name,'') teacher "
-            "FROM class_routines r LEFT JOIN class_levels cl ON cl.id=r.class_level_id "
+            "FROM class_routines r LEFT JOIN routine_plans p ON p.id=r.routine_plan_id "
+            "LEFT JOIN class_levels cl ON cl.id=r.class_level_id "
             "LEFT JOIN teachers t ON t.id=r.teacher_id " + where +
             " ORDER BY CAST(COALESCE(cl.level_name,r.class_name) AS UNSIGNED),"
             "CASE r.day_of_week WHEN 'Sunday' THEN 1 WHEN 'Monday' THEN 2 "

@@ -8,6 +8,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 from elh.ui.desktop.components import CrudPage, FormBuilder, SearchableCombobox, TimeEntry
+from elh.ui.desktop.helpers import today_iso
 
 
 DAYS = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
@@ -22,6 +23,8 @@ class RoutinesPage(CrudPage):
         self.teacher_map: dict[str, int] = {}
         self.course_map: dict[str, int] = {}
         self.class_map: dict[str, int] = {}
+        self.routine_plan_map: dict[str, int] = {}
+        self.routine_plan = tk.StringVar()
         ttk.Label(self, text="Class Routine", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             self,
@@ -65,6 +68,17 @@ class RoutinesPage(CrudPage):
         self.tree.configure(selectmode="extended")
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
         self.tree.bind("<Double-1>", self.open_editor)
+        plan_bar = ttk.Frame(self, style="Toolbar.TFrame", padding=(8, 6))
+        plan_bar.pack(fill="x", pady=(0, 6))
+        ttk.Label(plan_bar, text="Routine Plan", style="Form.TLabel").pack(side="left")
+        self.plan_combo = SearchableCombobox(plan_bar, textvariable=self.routine_plan, values=[], width=38)
+        self.plan_combo.pack(side="left", padx=(8, 6))
+        self.plan_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh())
+        ttk.Button(plan_bar, text="New Effective Plan…", command=self.new_effective_plan).pack(side="left")
+        ttk.Label(
+            plan_bar, text="Periods belong to a dated plan; creating a new plan keeps the old schedule for history.",
+            style="Hint.TLabel",
+        ).pack(side="left", padx=10)
         ttk.Button(
             self.page_toolbar, text="Bulk Edit Selected…", command=self.bulk_edit_selected
         ).pack(side="left", padx=4)
@@ -80,20 +94,23 @@ class RoutinesPage(CrudPage):
         class_id = self.class_map.get(class_name)
         if not class_id:
             raise ValueError("Select a class/level from the Class Levels list.")
+        plan_id = self.routine_plan_map.get(self.routine_plan.get())
+        if not plan_id:
+            raise ValueError("Select a routine plan before saving periods.")
         return (
             class_name, self.vars["day"].get(), period, subject,
             class_id,
             self.teacher_map.get(self.vars["teacher"].get()),
             self.course_map.get(self.vars["course"].get()),
             self.vars["start"].get().strip(), self.vars["end"].get().strip(),
-            self.vars["status"].get(), self.vars["remarks"].get().strip(),
+            self.vars["status"].get(), self.vars["remarks"].get().strip(), plan_id,
         )
 
     def save(self):
         try:
             self.db.execute(
-                "INSERT INTO class_routines (class_name,day_of_week,period_label,subject_name,class_level_id,teacher_id,course_id,start_time,end_time,status,remarks) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)", self._values(),
+                "INSERT INTO class_routines (class_name,day_of_week,period_label,subject_name,class_level_id,teacher_id,course_id,start_time,end_time,status,remarks,routine_plan_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", self._values(),
             )
             self.clear(); self.app.refresh_all()
         except Exception as exc:
@@ -104,7 +121,7 @@ class RoutinesPage(CrudPage):
             return
         try:
             self.db.execute(
-                "UPDATE class_routines SET class_name=?,day_of_week=?,period_label=?,subject_name=?,class_level_id=?,teacher_id=?,course_id=?,start_time=?,end_time=?,status=?,remarks=? WHERE id=?",
+                "UPDATE class_routines SET class_name=?,day_of_week=?,period_label=?,subject_name=?,class_level_id=?,teacher_id=?,course_id=?,start_time=?,end_time=?,status=?,remarks=?,routine_plan_id=? WHERE id=?",
                 self._values() + (self.selected_id,),
             )
             self.clear(); self.app.refresh_all()
@@ -144,6 +161,74 @@ class RoutinesPage(CrudPage):
         if self.tree.selection():
             self.on_select(); self.show_form_dialog()
         return "break"
+
+    def new_effective_plan(self) -> None:
+        source_plan_id = self.routine_plan_map.get(self.routine_plan.get())
+        if not source_plan_id:
+            messagebox.showwarning("Routine Plan", "Select the routine plan to copy first.", parent=self)
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("Create Effective Routine Plan")
+        dialog.configure(background="#EEF3F8")
+        dialog.transient(self.winfo_toplevel())
+        dialog.resizable(False, False)
+        shell = ttk.Frame(dialog, padding=14, style="Form.TFrame")
+        shell.pack(fill="both", expand=True)
+        ttk.Label(shell, text="Create a New Routine Plan", style="SubTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            shell,
+            text="The selected plan is retained as history. Its periods are copied so you can edit the new plan safely.",
+            style="Hint.TLabel", wraplength=520,
+        ).pack(anchor="w", pady=(0, 10))
+        name = tk.StringVar()
+        effective_from = tk.StringVar(value=today_iso())
+        remarks = tk.StringVar()
+        form = ttk.Frame(shell, style="Form.TFrame")
+        form.pack(fill="x")
+        fb = FormBuilder(form)
+        fb.entry("Plan Name *", name, width=42)
+        fb.entry("Effective From *", effective_from, width=42)
+        fb.entry("Remarks", remarks, width=42)
+        archive_source = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            shell, text="Archive selected plan when this plan starts", variable=archive_source
+        ).pack(anchor="w", pady=(8, 0))
+        actions = ttk.Frame(shell, style="Form.TFrame")
+        actions.pack(fill="x", pady=(14, 0))
+        ttk.Button(actions, text="Cancel", command=dialog.destroy).pack(side="right")
+
+        def create_plan():
+            try:
+                plan_name = name.get().strip()
+                starts = effective_from.get().strip()
+                if not plan_name or not starts:
+                    raise ValueError("Plan name and effective-from date are required.")
+                new_id = self.db.execute(
+                    "INSERT INTO routine_plans (plan_name,effective_from,status,remarks) VALUES (?,?,?,?)",
+                    (plan_name, starts, "Active", remarks.get().strip()),
+                )
+                self.db.execute(
+                    "INSERT INTO class_routines (routine_plan_id,class_name,day_of_week,period_label,subject_name,"
+                    "class_level_id,teacher_id,course_id,start_time,end_time,status,remarks,grade_id) "
+                    "SELECT ?,class_name,day_of_week,period_label,subject_name,class_level_id,teacher_id,course_id,"
+                    "start_time,end_time,status,remarks,grade_id FROM class_routines WHERE routine_plan_id=?",
+                    (new_id, source_plan_id),
+                )
+                if archive_source:
+                    self.db.execute(
+                        "UPDATE routine_plans SET status='Archived',effective_to=? WHERE id=?",
+                        (starts, source_plan_id),
+                    )
+                dialog.destroy()
+                self.routine_plan.set(f"{plan_name} (from {starts})")
+                self.clear()
+                self.app.refresh_all()
+            except Exception as exc:
+                messagebox.showerror("Routine Plan", str(exc), parent=dialog)
+
+        ttk.Button(actions, text="Create and Copy Periods", style="Accent.TButton", command=create_plan).pack(side="right", padx=(0, 6))
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.grab_set()
 
     def bulk_edit_selected(self) -> None:
         """Apply only explicitly selected fields to all selected routine periods."""
@@ -273,17 +358,32 @@ class RoutinesPage(CrudPage):
             messagebox.showinfo("Class Routine", "Select a routine row or class first.", parent=self)
             return
         try:
-            os.startfile(Path(self.app.services.reports.routine_pdf(class_id)), "print")
+            os.startfile(Path(self.app.services.reports.routine_pdf(
+                class_id, routine_plan_id=self.routine_plan_map.get(self.routine_plan.get())
+            )), "print")
         except Exception as exc:
             self.show_error(exc)
 
     def open_all_pdf(self):
         try:
-            os.startfile(Path(self.app.services.reports.routine_pdf()))
+            os.startfile(Path(self.app.services.reports.routine_pdf(
+                routine_plan_id=self.routine_plan_map.get(self.routine_plan.get())
+            )), "print")
         except Exception as exc:
             self.show_error(exc)
 
     def refresh(self):
+        plans = self.db.query(
+            "SELECT id,plan_name,effective_from,status FROM routine_plans "
+            "ORDER BY CASE status WHEN 'Active' THEN 0 ELSE 1 END,effective_from DESC,id DESC"
+        )
+        self.routine_plan_map = {
+            f"{row['plan_name']} (from {row['effective_from']})": int(row["id"])
+            for row in plans
+        }
+        self.plan_combo.set_values(self.routine_plan_map)
+        if self.routine_plan.get() not in self.routine_plan_map and self.routine_plan_map:
+            self.routine_plan.set(next(iter(self.routine_plan_map)))
         classes = self.db.query("SELECT id,level_name FROM class_levels WHERE status='Active' ORDER BY level_name")
         self.class_map = {str(row["level_name"]): int(row["id"]) for row in classes}
         self.class_combo.set_values(self.class_map)
@@ -294,12 +394,16 @@ class RoutinesPage(CrudPage):
         self.course_map = {f"{row['course_name']} [{row['category']}]": int(row["id"]) for row in courses}
         self.course_combo.set_values(self.course_map)
         self.clear_tree(self.tree)
+        plan_id = self.routine_plan_map.get(self.routine_plan.get())
+        if not plan_id:
+            return
         rows = self.db.query(
             "SELECT r.*,t.teacher_name,c.course_name FROM class_routines r "
             "LEFT JOIN teachers t ON t.id=r.teacher_id LEFT JOIN courses c ON c.id=r.course_id "
+            "WHERE r.routine_plan_id=? "
             "ORDER BY CASE r.day_of_week WHEN 'Sunday' THEN 1 WHEN 'Monday' THEN 2 WHEN 'Tuesday' THEN 3 "
             "WHEN 'Wednesday' THEN 4 WHEN 'Thursday' THEN 5 WHEN 'Friday' THEN 6 WHEN 'Saturday' THEN 7 ELSE 8 END,"
-            "r.class_name,r.period_label"
+            "r.class_name,r.period_label", (plan_id,)
         )
         for row in rows:
             time = " - ".join(part for part in (row["start_time"] or "", row["end_time"] or "") if part)

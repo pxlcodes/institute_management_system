@@ -168,7 +168,8 @@ class AttendanceService:
         start_date = datetime.fromisoformat(start_at).date()
         end_date = datetime.fromisoformat(end_at).date()
         rows = self.repository.db.query(
-            "SELECT day_of_week FROM class_routines WHERE teacher_id=? AND status='Active'",
+            "SELECT r.day_of_week FROM class_routines r JOIN routine_plans p ON p.id=r.routine_plan_id "
+            "WHERE r.teacher_id=? AND r.status='Active' AND p.status='Active'",
             (int(staff_id),),
         )
         routine_days = [str(row["day_of_week"]) for row in rows]
@@ -186,7 +187,9 @@ class AttendanceService:
         if not class_name or end_date < start_date:
             return []
         rows = self.repository.db.query(
-            "SELECT DISTINCT day_of_week FROM class_routines WHERE class_name=? AND status='Active'",
+            "SELECT DISTINCT r.day_of_week FROM class_routines r "
+            "JOIN routine_plans p ON p.id=r.routine_plan_id "
+            "WHERE r.class_name=? AND r.status='Active' AND p.status='Active'",
             (class_name,),
         )
         routine_days = {str(row["day_of_week"]) for row in rows}
