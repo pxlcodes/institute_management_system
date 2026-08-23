@@ -302,6 +302,7 @@ class AttendanceService:
                 reasons.append(f"{missing_days} missing day(s) this month")
             if reasons:
                 review = reviews.get(int(row["id"]))
+                last_seen = row["last_seen"]
                 alerts.append({
                     "student_id": int(row["id"]), "student_name": row["student_name"],
                     "class_name": row["class_name"] or "", "contact": row["contact"] or "",
