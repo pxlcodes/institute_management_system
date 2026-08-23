@@ -254,6 +254,7 @@ class CrudPage(BasePage):
             filter_value_var.set("")
         ttk.Button(search_row, text="Clear", command=clear_filters).pack(side="left", padx=2)
         tree.search_var = search_var
+        tree._all_items = all_items
         tree.filter_var = filter_value_var
         tree.filter_column_var = filter_column_var
         tree.visible_column_vars = visible_columns
@@ -263,7 +264,11 @@ class CrudPage(BasePage):
 
     @staticmethod
     def clear_tree(tree: ttk.Treeview) -> None:
-        tree.delete(*tree.get_children())
+        # Filtered-out rows are detached and therefore absent from get_children().
+        # Delete the tracked rows too, otherwise a later refresh can reuse an ID.
+        items = list(getattr(tree, "_all_items", ())) or list(tree.get_children())
+        if items:
+            tree.delete(*items)
 
 
 class SearchableCombobox(ttk.Combobox):

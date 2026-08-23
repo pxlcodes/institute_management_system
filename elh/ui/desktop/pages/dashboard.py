@@ -170,7 +170,7 @@ class DashboardPage(BasePage):
         self.cards["cash_total"].config(text=money(total_balance))
         self.cards["salary_total"].config(text=money(metrics["salary_total"]))
 
-        self.present_tree.delete(*self.present_tree.get_children())
+        self.clear_tree(self.present_tree)
         for row in present_students:
             self.present_tree.insert(
                 "",
@@ -184,7 +184,7 @@ class DashboardPage(BasePage):
                 ),
             )
 
-        self.absent_tree.delete(*self.absent_tree.get_children())
+        self.clear_tree(self.absent_tree)
         for row in absent_students:
             self.absent_tree.insert(
                 "", "end", iid=f"absent-{row['id']}", values=(
@@ -194,14 +194,14 @@ class DashboardPage(BasePage):
                 ),
             )
 
-        self.alert_tree.delete(*self.alert_tree.get_children())
+        self.clear_tree(self.alert_tree)
         for row in attendance_alerts:
             self.alert_tree.insert("", "end", iid=f"alert-{row['student_id']}", values=(
                 row["student_name"], row["class_name"], self._attendance_date(row["last_seen"]),
                 row["consecutive_days"], row["monthly_missing_days"], row["review_status"], row["reason"],
             ))
 
-        self.tree.delete(*self.tree.get_children())
+        self.clear_tree(self.tree)
         for row in accounts:
             self.tree.insert(
                 "", "end",
