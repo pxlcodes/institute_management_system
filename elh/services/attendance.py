@@ -167,16 +167,20 @@ class AttendanceService:
         start_at, end_at, calendar_days = self._month_range(salary_month, "Salary month")
         start_date = datetime.fromisoformat(start_at).date()
         end_date = datetime.fromisoformat(end_at).date()
-        rows = self.repository.db.query(
-            "SELECT r.day_of_week FROM class_routines r JOIN routine_plans p ON p.id=r.routine_plan_id "
-            "WHERE r.teacher_id=? AND r.status='Active' AND p.status='Active'",
-            (int(staff_id),),
-        )
-        routine_days = [str(row["day_of_week"]) for row in rows]
-        periods = sum(
-            routine_days.count(self._day_name(start_date + timedelta(days=offset)))
-            for offset in range((end_date - start_date).days + 1)
-        )
+        routine_days: list[str] = []
+        periods = 0
+        for offset in range((end_date - start_date).days + 1):
+            current_date = start_date + timedelta(days=offset)
+            day_name = self._day_name(current_date)
+            business_date = self._business_date_from_ad(current_date)
+            rows = self.repository.db.query(
+                "SELECT r.day_of_week FROM class_routines r JOIN routine_plans p ON p.id=r.routine_plan_id "
+                "WHERE r.teacher_id=? AND r.status='Active' AND r.day_of_week=? "
+                "AND p.effective_from<=? AND (p.effective_to IS NULL OR p.effective_to>?)",
+                (int(staff_id), day_name, business_date, business_date),
+            )
+            periods += len(rows)
+            routine_days.extend(str(row["day_of_week"]) for row in rows)
         return {"scheduled_classes": periods, "routine_days": sorted(set(routine_days)), "calendar_days": calendar_days}
 
     @staticmethod
@@ -186,18 +190,25 @@ class AttendanceService:
     def _working_dates_for_class(self, class_name: str, start_date, end_date) -> list:
         if not class_name or end_date < start_date:
             return []
-        rows = self.repository.db.query(
-            "SELECT DISTINCT r.day_of_week FROM class_routines r "
-            "JOIN routine_plans p ON p.id=r.routine_plan_id "
-            "WHERE r.class_name=? AND r.status='Active' AND p.status='Active'",
-            (class_name,),
-        )
-        routine_days = {str(row["day_of_week"]) for row in rows}
-        return [
-            start_date + timedelta(days=offset)
-            for offset in range((end_date - start_date).days + 1)
-            if self._day_name(start_date + timedelta(days=offset)) in routine_days
-        ]
+        working_dates = []
+        for offset in range((end_date - start_date).days + 1):
+            current_date = start_date + timedelta(days=offset)
+            business_date = self._business_date_from_ad(current_date)
+            if self.repository.db.query_one(
+                "SELECT 1 FROM class_routines r JOIN routine_plans p ON p.id=r.routine_plan_id "
+                "WHERE r.class_name=? AND r.status='Active' AND r.day_of_week=? "
+                "AND p.effective_from<=? AND (p.effective_to IS NULL OR p.effective_to>?) LIMIT 1",
+                (
+                    class_name, self._day_name(current_date),
+                    business_date, business_date,
+                ),
+            ):
+                working_dates.append(current_date)
+        return working_dates
+
+    @staticmethod
+    def _business_date_from_ad(value) -> str:
+        return nepali.date.from_datetime_date(value).strftime("%Y/%m/%d")
 
     @staticmethod
     def _business_date_to_ad(value: str):
