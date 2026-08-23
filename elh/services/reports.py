@@ -95,28 +95,30 @@ class ReportsService:
             digits = "".join(char for char in text if char.isdigit())
             return (int(digits) if digits else 999, text.casefold())
 
-        grouped: dict[str, dict[str, dict[str, dict]]] = {}
+        # A class can run parallel subjects in the same period. Keep every row
+        # for a day rather than allowing the last one to overwrite the others.
+        grouped: dict[str, dict[str, dict[str, list[dict]]]] = {}
         for row in rows:
             grouped.setdefault(str(row["class_name"]), {}).setdefault(
                 str(row["period_label"]), {}
-            )[str(row["day_of_week"])] = row
+            ).setdefault(str(row["day_of_week"]), []).append(row)
 
         styles = getSampleStyleSheet()
         profile = self.company_profile()
         heading = ParagraphStyle(
-            "RoutineCompany", parent=styles["Title"], fontSize=18, leading=21,
+            "RoutineCompany", parent=styles["Title"], fontSize=16, leading=18,
             textColor=colors.HexColor("#102A43"), alignment=1,
         )
         sub = ParagraphStyle(
-            "RoutineSub", parent=styles["BodyText"], fontSize=8.5, leading=11,
+            "RoutineSub", parent=styles["BodyText"], fontSize=7.5, leading=9,
             alignment=1, textColor=colors.HexColor("#475569"),
         )
         cell = ParagraphStyle(
-            "RoutineCell", parent=styles["BodyText"], fontSize=8.5, leading=10.5,
+            "RoutineCell", parent=styles["BodyText"], fontSize=7.5, leading=8.5,
             alignment=1, fontName="Helvetica-Bold",
         )
         row_label = ParagraphStyle(
-            "RoutineRowLabel", parent=cell, textColor=colors.white, fontSize=9,
+            "RoutineRowLabel", parent=cell, textColor=colors.white, fontSize=8,
         )
         table_data = [["CLASS", "PERIOD", *[day.upper() for day in days]]]
         body_row_colors = []
@@ -128,13 +130,16 @@ class ReportsService:
                 class_label = Paragraph(f"Grade {escape(class_name)}", row_label) if period_index == 0 else ""
                 values = [class_label, Paragraph(f"{escape(period)}<br/>period", row_label)]
                 for day in days:
-                    item = grouped[class_name][period].get(day)
-                    if not item:
+                    entries = grouped[class_name][period].get(day, [])
+                    if not entries:
                         values.append(Paragraph("", cell))
                         continue
-                    subject = escape(str(item["subject_name"] or ""))
-                    teacher = escape(str(item["teacher"] or ""))
-                    content = subject + (f"<br/><font size=7>{teacher}</font>" if teacher else "")
+                    content = "<br/><br/>".join(
+                        escape(str(item["subject_name"] or ""))
+                        + (f"<br/><font size=7>{escape(str(item['teacher'] or ''))}</font>"
+                           if item["teacher"] else "")
+                        for item in entries
+                    )
                     values.append(Paragraph(content, cell))
                 table_data.append(values)
                 body_row_colors.append(
@@ -157,13 +162,13 @@ class ReportsService:
         selected_label = next(iter(grouped)) if class_level_id and len(grouped) == 1 else "All Classes"
         story = [
             Paragraph(profile.get("company_name") or self.app_title, heading),
-            Paragraph(" | ".join(details), sub), Spacer(1, 4 * mm),
+            Paragraph(" | ".join(details), sub), Spacer(1, 2 * mm),
             Paragraph("WEEKLY CLASS ROUTINE", ParagraphStyle(
-                "RoutineTitle", parent=styles["Heading2"], alignment=1,
+                "RoutineTitle", parent=styles["Heading2"], fontSize=14, leading=16, alignment=1,
                 textColor=colors.HexColor("#008F7A"),
             )),
             Paragraph(f"{selected_label} | Printed: {today_iso()} (BS)", sub),
-            Spacer(1, 5 * mm),
+            Spacer(1, 3 * mm),
         ]
         table = Table(
             table_data, colWidths=[24 * mm, 18 * mm] + [39.1 * mm] * len(days), repeatRows=1
@@ -172,13 +177,13 @@ class ReportsService:
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1D6989")),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, 0), 9),
+            ("FONTSIZE", (0, 0), (-1, 0), 8),
             ("ALIGN", (0, 0), (-1, -1), "CENTER"),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("BACKGROUND", (0, 1), (1, -1), colors.HexColor("#1D6989")),
             ("GRID", (0, 0), (-1, -1), 0.6, colors.white),
-            ("TOPPADDING", (0, 0), (-1, -1), 8),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ]
         for index, background in enumerate(body_row_colors, start=1):
             table_style.append(("BACKGROUND", (2, index), (-1, index), background))
