@@ -336,6 +336,8 @@ class FormBuilder:
         )
         if "date" in label.lower():
             widget = DateEntry(self.parent, variable, width)
+        elif "time" in label.lower():
+            widget = TimeEntry(self.parent, variable, width)
         else:
             widget = ttk.Entry(self.parent, textvariable=variable, width=width)
         widget.grid(row=self.row, column=1, padx=5, pady=4, sticky="ew")
@@ -391,6 +393,76 @@ class DateEntry(ttk.Frame):
 
     def open_picker(self):
         DatePickerDialog(self, self.variable)
+
+
+class TimeEntry(ttk.Frame):
+    """A keyboard-friendly time field with a 12-hour time selector."""
+
+    def __init__(self, parent, variable: tk.StringVar, width: int = 28):
+        super().__init__(parent, style="Form.TFrame")
+        self.variable = variable
+        ttk.Entry(self, textvariable=variable, width=max(10, width - 4)).pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(self, text="🕘", width=3, command=self.open_picker).pack(
+            side="left", padx=(3, 0)
+        )
+
+    def open_picker(self):
+        TimePickerDialog(self, self.variable)
+
+
+class TimePickerDialog(tk.Toplevel):
+    """Choose a consistent ``h:mm AM/PM`` value without manual typing."""
+
+    def __init__(self, parent, variable: tk.StringVar):
+        super().__init__(parent)
+        self.variable = variable
+        self.title("Select Time")
+        self.resizable(False, False)
+        self.transient(parent.winfo_toplevel())
+        self.configure(background="#EEF3F8")
+        hour, minute, meridiem = self._parts(variable.get())
+        self.hour = tk.StringVar(value=hour)
+        self.minute = tk.StringVar(value=minute)
+        self.meridiem = tk.StringVar(value=meridiem)
+
+        body = ttk.Frame(self, padding=12, style="Form.TFrame")
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="Hour", style="Form.TLabel").grid(row=0, column=0, padx=4, pady=4)
+        hour_box = ttk.Combobox(body, textvariable=self.hour, values=[str(i) for i in range(1, 13)], width=5, state="readonly")
+        hour_box.grid(row=1, column=0, padx=4, pady=(0, 10))
+        ttk.Label(body, text="Minute", style="Form.TLabel").grid(row=0, column=1, padx=4, pady=4)
+        ttk.Combobox(body, textvariable=self.minute, values=[f"{i:02d}" for i in range(60)], width=5, state="readonly").grid(row=1, column=1, padx=4, pady=(0, 10))
+        ttk.Label(body, text="AM / PM", style="Form.TLabel").grid(row=0, column=2, padx=4, pady=4)
+        ttk.Combobox(body, textvariable=self.meridiem, values=("AM", "PM"), width=5, state="readonly").grid(row=1, column=2, padx=4, pady=(0, 10))
+        ttk.Button(body, text="Clear", command=self.clear).grid(row=2, column=0, sticky="w", padx=4)
+        ttk.Button(body, text="Cancel", command=self.destroy).grid(row=2, column=1, padx=4)
+        ttk.Button(body, text="Use Time", style="Accent.TButton", command=self.select).grid(row=2, column=2, sticky="e", padx=4)
+        hour_box.focus_set()
+        self.bind("<Return>", lambda _event: self.select())
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self.grab_set()
+
+    @staticmethod
+    def _parts(value: str) -> tuple[str, str, str]:
+        try:
+            time_part, meridiem = value.strip().upper().split()
+            hour, minute = time_part.split(":")
+            hour_value, minute_value = int(hour), int(minute)
+            if 1 <= hour_value <= 12 and 0 <= minute_value <= 59 and meridiem in {"AM", "PM"}:
+                return str(hour_value), f"{minute_value:02d}", meridiem
+        except (AttributeError, ValueError):
+            pass
+        return "8", "00", "AM"
+
+    def clear(self):
+        self.variable.set("")
+        self.destroy()
+
+    def select(self):
+        self.variable.set(f"{int(self.hour.get())}:{self.minute.get()} {self.meridiem.get()}")
+        self.destroy()
 
 
 class DatePickerDialog(tk.Toplevel):
