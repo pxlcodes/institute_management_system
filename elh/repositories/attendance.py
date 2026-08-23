@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from elh.models import AttendanceDeviceUser, AttendanceEvent, DeviceUserMapping
 from .protocols import DatabaseGateway
 
@@ -112,6 +114,29 @@ class AttendanceRepository:
                 "WHERE device_user_id = ?",
                 (person_type, person_id, device_user_id),
             )
+
+    def save_manual_present(self, person_type: str, person_id: int, occurred_at: datetime, reason: str) -> bool:
+        """Store a reviewed manual presence mark without impersonating a device punch."""
+        day_start = occurred_at.strftime("%Y-%m-%d 00:00:00")
+        day_end = occurred_at.strftime("%Y-%m-%d 23:59:59")
+        existing = self.db.query_one(
+            "SELECT id FROM attendance_logs WHERE person_type=? AND person_id=? "
+            "AND occurred_at BETWEEN ? AND ? LIMIT 1",
+            (person_type, person_id, day_start, day_end),
+        )
+        if existing:
+            return False
+        self.db.execute(
+            "INSERT INTO attendance_logs "
+            "(device_user_id,person_type,person_id,occurred_at,event_type,device_serial,verification_mode) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (
+                f"MANUAL-{person_type}-{person_id}", person_type, person_id,
+                occurred_at.strftime("%Y-%m-%d %H:%M:%S"), "Manual Present", "Manual Entry",
+                reason.strip(),
+            ),
+        )
+        return True
 
     def person_exists(self, person_type: str, person_id: int) -> bool:
         table = "teachers" if person_type == "teacher" else "students"

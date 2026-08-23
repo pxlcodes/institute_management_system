@@ -67,6 +67,9 @@ class AttendancePage(CrudPage):
             command=self.sync_registered_names,
         )
         self.name_sync_button.pack(side="left", padx=4)
+        ttk.Button(
+            self.page_toolbar, text="Manual Attendance…", command=self.open_manual_attendance
+        ).pack(side="left", padx=4)
         ttk.Button(self.page_toolbar, text="Refresh", command=self.refresh).pack(
             side="left", padx=4
         )
@@ -117,6 +120,7 @@ class AttendancePage(CrudPage):
                 ("person", "Student / Staff", 180),
                 ("time", "Attendance Time", 165),
                 ("event", "Event", 90),
+                ("reason", "Source / Reason", 220),
                 ("serial", "Device Serial", 130),
             ],
         )
@@ -258,6 +262,73 @@ class AttendancePage(CrudPage):
             )
         except Exception as exc:
             self.show_error(exc)
+
+    def open_manual_attendance(self):
+        """Correct a missed device punch for an active student or staff member."""
+        dialog = tk.Toplevel(self)
+        dialog.title("Manual Attendance Correction")
+        dialog.configure(background="#EEF3F8")
+        dialog.transient(self.winfo_toplevel())
+        dialog.resizable(False, False)
+        shell = ttk.Frame(dialog, padding=14, style="Form.TFrame")
+        shell.pack(fill="both", expand=True)
+        ttk.Label(shell, text="Manual Attendance Correction", style="SubTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            shell,
+            text="Use only when a valid device punch is missing. The log is marked Manual Present and records the reason.",
+            style="Hint.TLabel", wraplength=590,
+        ).pack(anchor="w", pady=(0, 10))
+        values = {
+            "type": tk.StringVar(value="Student"), "person": tk.StringVar(),
+            "date": tk.StringVar(value=today_iso()), "time": tk.StringVar(value="8:00 AM"),
+            "reason": tk.StringVar(),
+        }
+        person_map: dict[str, int] = {}
+        form = ttk.Frame(shell, style="Form.TFrame")
+        form.pack(fill="x")
+        fb = FormBuilder(form)
+        type_combo = fb.combo("Person Type *", values["type"], ["Student", "Staff"])
+        person_combo = fb.combo("Student / Staff *", values["person"], [], searchable=True, width=38)
+        fb.entry("Attendance Date *", values["date"], width=40)
+        fb.entry("Attendance Time *", values["time"], width=40)
+        fb.entry("Reason *", values["reason"], width=40)
+
+        def load_people(*_args):
+            table, name = ("teachers", "teacher_name") if values["type"].get() == "Staff" else ("students", "student_name")
+            rows = self.db.query(
+                f"SELECT id,{name} name FROM {table} WHERE status='Active' ORDER BY {name}"
+            )
+            person_map.clear()
+            person_map.update({f"{row['id']} - {row['name']}": int(row["id"]) for row in rows})
+            person_combo.set_values(person_map)
+            values["person"].set("")
+
+        type_combo.bind("<<ComboboxSelected>>", load_people)
+        load_people()
+        actions = ttk.Frame(shell, style="Form.TFrame")
+        actions.pack(fill="x", pady=(14, 0))
+        ttk.Button(actions, text="Cancel", command=dialog.destroy).pack(side="right")
+
+        def save_manual():
+            try:
+                person_id = person_map.get(values["person"].get())
+                if not person_id:
+                    raise ValueError("Select a student or staff member from the list.")
+                created = self.app.services.attendance.mark_manual_present(
+                    "teacher" if values["type"].get() == "Staff" else "student",
+                    person_id, values["date"].get(), values["time"].get(), values["reason"].get(),
+                )
+                if not created:
+                    raise ValueError("Attendance is already recorded for this person on that date.")
+                dialog.destroy()
+                self.app.refresh_all()
+                messagebox.showinfo("Manual Attendance", "Manual presence was recorded.", parent=self)
+            except Exception as exc:
+                messagebox.showerror("Manual Attendance", str(exc), parent=dialog)
+
+        ttk.Button(actions, text="Mark Present", style="Accent.TButton", command=save_manual).pack(side="right", padx=(0, 6))
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.grab_set()
 
     def _set_device_buttons(self, enabled: bool):
         state = "normal" if enabled else "disabled"
@@ -410,6 +481,7 @@ class AttendancePage(CrudPage):
                     row["person_name"] or "",
                     self.display_time(row["occurred_at"]),
                     row["event_type"],
+                    row["verification_mode"] or "Device",
                     row["device_serial"] or "",
                 ),
             )

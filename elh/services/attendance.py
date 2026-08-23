@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 import nepali_datetime as nepali
 
-from elh.core.validation import validate_month
+from elh.core.validation import validate_date, validate_month
 from elh.hardware.attendance.base import AttendanceDevice
 from elh.repositories import AttendanceRepository
 from elh.core.settings import SettingsService
@@ -104,6 +104,26 @@ class AttendanceService:
                 person_id,
                 "Active",
             )
+
+    def mark_manual_present(
+        self, person_type: str, person_id: int, attendance_date: str, attendance_time: str, reason: str,
+    ) -> bool:
+        """Correct a missed device punch while retaining its manual source and reason."""
+        person_type = person_type.strip().lower()
+        if person_type not in {"student", "teacher"}:
+            raise ValueError("Person type must be Student or Staff.")
+        if not self.repository.person_exists(person_type, int(person_id)):
+            raise ValueError("The selected person no longer exists.")
+        if not reason.strip():
+            raise ValueError("A reason is required for a manual attendance correction.")
+        attendance_date = validate_date(attendance_date, "Attendance date")
+        try:
+            parsed_time = datetime.strptime(attendance_time.strip().upper(), "%I:%M %p").time()
+        except ValueError as exc:
+            raise ValueError("Select a valid attendance time.") from exc
+        year, month, day = (int(value) for value in attendance_date.split("/"))
+        occurred_at = datetime.combine(nepali.date(year, month, day).to_datetime_date(), parsed_time)
+        return self.repository.save_manual_present(person_type, int(person_id), occurred_at, reason)
 
     def staff_totals(self, start_at: str, end_at: str):
         grouped = defaultdict(lambda: defaultdict(list))
