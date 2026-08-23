@@ -57,13 +57,141 @@ class ReportsService:
         return self._build(output or self._path("student_class_school_analysis.pdf"), "STUDENT COUNT ANALYSIS", "Current", "Current", ["Group","Class / School","Students"], data, ["","TOTAL STUDENTS",str(sum(int(r["total"]) for r in classes))])
 
     def routine_pdf(self, class_level_id: int | None = None, output: Path | None = None) -> Path:
-        where = ""; params = ()
+        """Render the routine as a day-by-day timetable, not a transaction list."""
+        from xml.sax.saxutils import escape
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import mm
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+        days = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday")
+        where, params = "WHERE r.status='Active'", ()
         if class_level_id:
-            where = "WHERE r.class_level_id=?"; params = (int(class_level_id),)
-        rows = self.db.query("SELECT COALESCE(cl.level_name,r.class_name) class_name,r.day_of_week,r.period_label,r.subject_name,COALESCE(t.teacher_name,'Unassigned') teacher,COALESCE(c.course_name,'') course,COALESCE(r.start_time,'') start_time,COALESCE(r.end_time,'') end_time,r.status FROM class_routines r LEFT JOIN class_levels cl ON cl.id=r.class_level_id LEFT JOIN teachers t ON t.id=r.teacher_id LEFT JOIN courses c ON c.id=r.course_id " + where + " ORDER BY class_name,CASE r.day_of_week WHEN 'Sunday' THEN 1 WHEN 'Monday' THEN 2 WHEN 'Tuesday' THEN 3 WHEN 'Wednesday' THEN 4 WHEN 'Thursday' THEN 5 WHEN 'Friday' THEN 6 WHEN 'Saturday' THEN 7 ELSE 8 END,r.period_label", params)
-        data = [[r["class_name"],r["day_of_week"],r["period_label"],r["subject_name"],r["teacher"],r["course"]," - ".join(v for v in (r["start_time"],r["end_time"]) if v),r["status"]] for r in rows]
+            where += " AND r.class_level_id=?"
+            params = (int(class_level_id),)
+        rows = self.db.query(
+            "SELECT COALESCE(cl.level_name,r.class_name) class_name,r.day_of_week,"
+            "r.period_label,r.subject_name,COALESCE(t.teacher_name,'') teacher "
+            "FROM class_routines r LEFT JOIN class_levels cl ON cl.id=r.class_level_id "
+            "LEFT JOIN teachers t ON t.id=r.teacher_id " + where +
+            " ORDER BY CAST(COALESCE(cl.level_name,r.class_name) AS UNSIGNED),"
+            "CASE r.day_of_week WHEN 'Sunday' THEN 1 WHEN 'Monday' THEN 2 "
+            "WHEN 'Tuesday' THEN 3 WHEN 'Wednesday' THEN 4 WHEN 'Thursday' THEN 5 "
+            "WHEN 'Friday' THEN 6 ELSE 7 END,r.period_label",
+            params,
+        )
+        if not rows:
+            raise ValueError("There are no active routine periods to print.")
+
+        def class_key(value):
+            try:
+                return (0, int(str(value)))
+            except ValueError:
+                return (1, str(value).casefold())
+
+        def period_key(value):
+            text = str(value).strip()
+            digits = "".join(char for char in text if char.isdigit())
+            return (int(digits) if digits else 999, text.casefold())
+
+        grouped: dict[str, dict[str, dict[str, dict]]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["class_name"]), {}).setdefault(
+                str(row["period_label"]), {}
+            )[str(row["day_of_week"])] = row
+
+        styles = getSampleStyleSheet()
+        profile = self.company_profile()
+        heading = ParagraphStyle(
+            "RoutineCompany", parent=styles["Title"], fontSize=18, leading=21,
+            textColor=colors.HexColor("#102A43"), alignment=1,
+        )
+        sub = ParagraphStyle(
+            "RoutineSub", parent=styles["BodyText"], fontSize=8.5, leading=11,
+            alignment=1, textColor=colors.HexColor("#475569"),
+        )
+        cell = ParagraphStyle(
+            "RoutineCell", parent=styles["BodyText"], fontSize=8.5, leading=10.5,
+            alignment=1, fontName="Helvetica-Bold",
+        )
+        row_label = ParagraphStyle(
+            "RoutineRowLabel", parent=cell, textColor=colors.white, fontSize=9,
+        )
+        table_data = [["CLASS / PERIOD", *[day.upper() for day in days]]]
+        body_row_colors = []
+        for class_name in sorted(grouped, key=class_key):
+            for period in sorted(grouped[class_name], key=period_key):
+                label = f"Grade {escape(class_name)}<br/>{escape(period)} period"
+                values = [Paragraph(label, row_label)]
+                for day in days:
+                    item = grouped[class_name][period].get(day)
+                    if not item:
+                        values.append(Paragraph("", cell))
+                        continue
+                    subject = escape(str(item["subject_name"] or ""))
+                    teacher = escape(str(item["teacher"] or ""))
+                    content = subject + (f"<br/><font size=7>{teacher}</font>" if teacher else "")
+                    values.append(Paragraph(content, cell))
+                table_data.append(values)
+                body_row_colors.append(
+                    colors.HexColor("#C5E6F5") if len(body_row_colors) % 2 == 0
+                    else colors.HexColor("#8AC9E6")
+                )
+
         suffix = f"_class_{class_level_id}" if class_level_id else "_all_classes"
-        return self._build(output or self._path(f"class_routine{suffix}.pdf"), "WEEKLY CLASS ROUTINE", "Selected class" if class_level_id else "All classes", "Weekly", ["Class","Day","Period","Subject","Staff","Course","Time","Status"], data, ["","","","TOTAL PERIODS",str(len(rows)),"","",""])
+        output = output or self._path(f"class_routine{suffix}.pdf")
+        details = []
+        if profile.get("pan_number"):
+            details.append(f"PAN: {profile['pan_number']}")
+        if profile.get("registration_number"):
+            details.append(f"Reg. No: {profile['registration_number']}")
+        details += [value for value in (
+            profile.get("address"), profile.get("phone"), profile.get("email"), profile.get("website")
+        ) if value]
+        selected_label = next(iter(grouped)) if class_level_id and len(grouped) == 1 else "All Classes"
+        story = [
+            Paragraph(profile.get("company_name") or self.app_title, heading),
+            Paragraph(" | ".join(details), sub), Spacer(1, 4 * mm),
+            Paragraph("WEEKLY CLASS ROUTINE", ParagraphStyle(
+                "RoutineTitle", parent=styles["Heading2"], alignment=1,
+                textColor=colors.HexColor("#008F7A"),
+            )),
+            Paragraph(f"{selected_label} | Printed: {today_iso()} (BS)", sub),
+            Spacer(1, 5 * mm),
+        ]
+        table = Table(table_data, colWidths=[35 * mm] + [40.3 * mm] * len(days), repeatRows=1)
+        table_style = [
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1D6989")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 9),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("BACKGROUND", (0, 1), (0, -1), colors.HexColor("#1D6989")),
+            ("GRID", (0, 0), (-1, -1), 0.6, colors.white),
+            ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ]
+        for index, background in enumerate(body_row_colors, start=1):
+            table_style.append(("BACKGROUND", (1, index), (-1, index), background))
+        table.setStyle(TableStyle(table_style))
+        story.append(table)
+
+        footer = profile.get("report_footer") or "Computer generated report"
+        def page(canvas, doc):
+            canvas.saveState()
+            canvas.setFont("Helvetica", 8)
+            canvas.setFillColor(colors.HexColor("#64748B"))
+            canvas.drawString(14 * mm, 8 * mm, footer)
+            canvas.drawRightString(283 * mm, 8 * mm, f"Page {doc.page}")
+            canvas.restoreState()
+
+        SimpleDocTemplate(
+            str(output), pagesize=landscape(A4), leftMargin=10 * mm, rightMargin=10 * mm,
+            topMargin=10 * mm, bottomMargin=14 * mm, title="Weekly Class Routine",
+        ).build(story, onFirstPage=page, onLaterPages=page)
+        return output
 
     def staff_register_pdf(self, output: Path | None = None) -> Path:
         rows = self.db.query("SELECT id,teacher_name,staff_type,contact,subject,joined_date,status FROM teachers ORDER BY teacher_name")
