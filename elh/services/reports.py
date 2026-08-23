@@ -50,6 +50,21 @@ class ReportsService:
         data = [[r["id"],r["student_name"],r["class_name"] or "",r["school_name"],r["contact"] or "",r["joining_date"],r["status"]] for r in rows]
         return self._build(output or self._path("student_register.pdf"), "STUDENT REGISTER", "All records", "Current", ["ID","Student","Class","School","Contact","Joining","Status"], data, ["","TOTAL STUDENTS",str(len(rows)),"","","",""])
 
+    def class_school_analysis_pdf(self, output: Path | None = None) -> Path:
+        classes = self.db.query("SELECT COALESCE(cl.level_name,s.class_name,'Not assigned') label,COUNT(*) total FROM students s LEFT JOIN class_levels cl ON cl.id=s.class_level_id GROUP BY COALESCE(cl.level_name,s.class_name,'Not assigned') ORDER BY label")
+        schools = self.db.query("SELECT COALESCE(sc.school_name,'Not assigned') label,COUNT(*) total FROM students s LEFT JOIN schools sc ON sc.id=s.school_id GROUP BY COALESCE(sc.school_name,'Not assigned') ORDER BY label")
+        data = [["Class / Level", r["label"], r["total"]] for r in classes] + [["School", r["label"], r["total"]] for r in schools]
+        return self._build(output or self._path("student_class_school_analysis.pdf"), "STUDENT COUNT ANALYSIS", "Current", "Current", ["Group","Class / School","Students"], data, ["","TOTAL STUDENTS",str(sum(int(r["total"]) for r in classes))])
+
+    def routine_pdf(self, class_level_id: int | None = None, output: Path | None = None) -> Path:
+        where = ""; params = ()
+        if class_level_id:
+            where = "WHERE r.class_level_id=?"; params = (int(class_level_id),)
+        rows = self.db.query("SELECT COALESCE(cl.level_name,r.class_name) class_name,r.day_of_week,r.period_label,r.subject_name,COALESCE(t.teacher_name,'Unassigned') teacher,COALESCE(c.course_name,'') course,COALESCE(r.start_time,'') start_time,COALESCE(r.end_time,'') end_time,r.status FROM class_routines r LEFT JOIN class_levels cl ON cl.id=r.class_level_id LEFT JOIN teachers t ON t.id=r.teacher_id LEFT JOIN courses c ON c.id=r.course_id " + where + " ORDER BY class_name,CASE r.day_of_week WHEN 'Sunday' THEN 1 WHEN 'Monday' THEN 2 WHEN 'Tuesday' THEN 3 WHEN 'Wednesday' THEN 4 WHEN 'Thursday' THEN 5 WHEN 'Friday' THEN 6 WHEN 'Saturday' THEN 7 ELSE 8 END,r.period_label", params)
+        data = [[r["class_name"],r["day_of_week"],r["period_label"],r["subject_name"],r["teacher"],r["course"]," - ".join(v for v in (r["start_time"],r["end_time"]) if v),r["status"]] for r in rows]
+        suffix = f"_class_{class_level_id}" if class_level_id else "_all_classes"
+        return self._build(output or self._path(f"class_routine{suffix}.pdf"), "WEEKLY CLASS ROUTINE", "Selected class" if class_level_id else "All classes", "Weekly", ["Class","Day","Period","Subject","Staff","Course","Time","Status"], data, ["","","","TOTAL PERIODS",str(len(rows)),"","",""])
+
     def staff_register_pdf(self, output: Path | None = None) -> Path:
         rows = self.db.query("SELECT id,teacher_name,staff_type,contact,subject,joined_date,status FROM teachers ORDER BY teacher_name")
         data = [[r["id"],r["teacher_name"],r["staff_type"],r["contact"] or "",r["subject"] or "",r["joined_date"],r["status"]] for r in rows]

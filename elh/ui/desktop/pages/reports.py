@@ -19,7 +19,7 @@ class ReportsPage(BasePage):
         finance=ttk.Frame(tabs,padding=18);academic=ttk.Frame(tabs,padding=18);attendance=ttk.Frame(tabs,padding=18);people=ttk.Frame(tabs,padding=18)
         tabs.add(finance,text="Finance & Payments");tabs.add(academic,text="Academic");tabs.add(attendance,text="Attendance Reconciliation");tabs.add(people,text="People & Staff")
         self.actions(finance,"Student payment collection and complete account movements.",[("Open Paid Transactions PDF",lambda:self.run("paid",False)),("Print Paid Transactions",lambda:self.run("paid",True)),("Open Account Ledger PDF",lambda:self.run("ledger",False)),("Print Account Ledger",lambda:self.run("ledger",True))])
-        self.actions(academic,"Current registered students for admission, class, and school verification.",[("Open Student Register PDF",lambda:self.run("students",False)),("Print Student Register",lambda:self.run("students",True))])
+        self.actions(academic,"Current registered students, class/school count analysis, and weekly routines.",[("Open Student Register PDF",lambda:self.run("students",False)),("Print Student Register",lambda:self.run("students",True)),("Open Class & School Analysis PDF",lambda:self.run("analysis",False)),("Print Class & School Analysis",lambda:self.run("analysis",True)),("Open All Class Routines PDF",lambda:self.run("routine",False)),("Print All Class Routines",lambda:self.run("routine",True))])
         self.actions(attendance,"Shows device users who have punched but are not linked to a Student or Staff record. This is the missing-registration list.",[("Open Unregistered Attendance PDF",lambda:self.run("unregistered",False)),("Print Unregistered Attendance",lambda:self.run("unregistered",True))])
         self.actions(people,"Current staff register for administrative and payroll review.",[("Open Staff Register PDF",lambda:self.run("staff",False)),("Print Staff Register",lambda:self.run("staff",True))])
 
@@ -37,6 +37,6 @@ class ReportsPage(BasePage):
                 end_at = nepali.date(*map(int, end.split("/"))).to_datetime_date().isoformat() + " 23:59:59"
                 path = service.unregistered_attendance_pdf(start_at, end_at, start, end)
             else:
-                path=(service.paid_transactions_pdf(start,end) if kind=="paid" else service.ledger_pdf(start,end) if kind=="ledger" else service.student_register_pdf() if kind=="students" else service.staff_register_pdf())
+                path=(service.paid_transactions_pdf(start,end) if kind=="paid" else service.ledger_pdf(start,end) if kind=="ledger" else service.student_register_pdf() if kind=="students" else service.class_school_analysis_pdf() if kind=="analysis" else service.routine_pdf() if kind=="routine" else service.staff_register_pdf())
             os.startfile(Path(path),"print" if print_now else "open")
         except Exception as exc:messagebox.showerror("Report Error",str(exc),parent=self)

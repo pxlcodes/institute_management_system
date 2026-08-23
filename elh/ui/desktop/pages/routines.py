@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import tkinter as tk
+import os
+from pathlib import Path
 from tkinter import messagebox, ttk
 
 from elh.ui.desktop.components import CrudPage, FormBuilder
@@ -19,6 +21,7 @@ class RoutinesPage(CrudPage):
         self.selected_id: int | None = None
         self.teacher_map: dict[str, int] = {}
         self.course_map: dict[str, int] = {}
+        self.class_map: dict[str, int] = {}
         ttk.Label(self, text="Class Routine", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             self,
@@ -61,6 +64,8 @@ class RoutinesPage(CrudPage):
         ])
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
         self.tree.bind("<Double-1>", self.open_editor)
+        ttk.Button(self.page_toolbar, text="Print Selected Class", command=self.print_selected_class).pack(side="left", padx=4)
+        ttk.Button(self.page_toolbar, text="Open All Routines PDF", command=self.open_all_pdf).pack(side="left", padx=4)
 
     def _values(self):
         class_name = self.vars["class"].get().strip()
@@ -68,8 +73,12 @@ class RoutinesPage(CrudPage):
         subject = self.vars["subject"].get().strip()
         if not class_name or not period or not subject:
             raise ValueError("Class/Level, period, and subject are required.")
+        class_id = self.class_map.get(class_name)
+        if not class_id:
+            raise ValueError("Select a class/level from the Class Levels list.")
         return (
             class_name, self.vars["day"].get(), period, subject,
+            class_id,
             self.teacher_map.get(self.vars["teacher"].get()),
             self.course_map.get(self.vars["course"].get()),
             self.vars["start"].get().strip(), self.vars["end"].get().strip(),
@@ -79,8 +88,8 @@ class RoutinesPage(CrudPage):
     def save(self):
         try:
             self.db.execute(
-                "INSERT INTO class_routines (class_name,day_of_week,period_label,subject_name,teacher_id,course_id,start_time,end_time,status,remarks) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)", self._values(),
+                "INSERT INTO class_routines (class_name,day_of_week,period_label,subject_name,class_level_id,teacher_id,course_id,start_time,end_time,status,remarks) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)", self._values(),
             )
             self.clear(); self.app.refresh_all()
         except Exception as exc:
@@ -91,7 +100,7 @@ class RoutinesPage(CrudPage):
             return
         try:
             self.db.execute(
-                "UPDATE class_routines SET class_name=?,day_of_week=?,period_label=?,subject_name=?,teacher_id=?,course_id=?,start_time=?,end_time=?,status=?,remarks=? WHERE id=?",
+                "UPDATE class_routines SET class_name=?,day_of_week=?,period_label=?,subject_name=?,class_level_id=?,teacher_id=?,course_id=?,start_time=?,end_time=?,status=?,remarks=? WHERE id=?",
                 self._values() + (self.selected_id,),
             )
             self.clear(); self.app.refresh_all()
@@ -132,9 +141,26 @@ class RoutinesPage(CrudPage):
             self.on_select(); self.show_form_dialog()
         return "break"
 
+    def print_selected_class(self):
+        class_id = self.class_map.get(self.vars["class"].get())
+        if not class_id:
+            messagebox.showinfo("Class Routine", "Select a routine row or class first.", parent=self)
+            return
+        try:
+            os.startfile(Path(self.app.services.reports.routine_pdf(class_id)), "print")
+        except Exception as exc:
+            self.show_error(exc)
+
+    def open_all_pdf(self):
+        try:
+            os.startfile(Path(self.app.services.reports.routine_pdf()))
+        except Exception as exc:
+            self.show_error(exc)
+
     def refresh(self):
-        classes = self.db.query("SELECT DISTINCT class_name FROM students WHERE class_name IS NOT NULL AND class_name<>'' ORDER BY class_name")
-        self.class_combo.set_values([str(row["class_name"]) for row in classes])
+        classes = self.db.query("SELECT id,level_name FROM class_levels WHERE status='Active' ORDER BY level_name")
+        self.class_map = {str(row["level_name"]): int(row["id"]) for row in classes}
+        self.class_combo.set_values(self.class_map)
         teachers = self.app.lookup_cache.get("active_staff", lambda: self.db.query("SELECT id,teacher_name FROM teachers WHERE status='Active' ORDER BY teacher_name"))
         self.teacher_map = {f"{row['id']} - {row['teacher_name']}": int(row["id"]) for row in teachers}
         self.teacher_combo.set_values(self.teacher_map)

@@ -34,7 +34,9 @@ STAFF_ACCOUNT_VERSION = 10
 STAFF_ACCOUNT_NAME = "add staff payment accounts and transaction statements"
 ROUTINE_VERSION = 11
 ROUTINE_NAME = "add academic routines and per-period payroll reference"
-LATEST_SCHEMA_VERSION = ROUTINE_VERSION
+CLASS_LEVEL_VERSION = 12
+CLASS_LEVEL_NAME = "normalize class levels and preload supplied weekly routine"
+LATEST_SCHEMA_VERSION = CLASS_LEVEL_VERSION
 
 
 INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
@@ -72,6 +74,7 @@ INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("attendance_logs", "idx_attendance_time_person", ("occurred_at", "person_type", "person_id")),
     ("class_routines", "idx_routines_class_day", ("class_name", "day_of_week", "status")),
     ("class_routines", "idx_routines_teacher_day", ("teacher_id", "day_of_week", "status")),
+    ("students", "idx_students_class_level", ("class_level_id", "status")),
     ("due_bills", "idx_due_bills_status_due", ("status", "due_date")),
     ("due_bills", "idx_due_bills_issue", ("issue_date",)),
     ("course_certificates", "idx_certificates_certify_date", ("certify_date",)),
@@ -191,6 +194,7 @@ def normalize_mysql_schema(db) -> None:
         ensure_mysql_attendance_alert_review_migration(db)
         ensure_mysql_staff_account_migration(db)
         ensure_mysql_routine_migration(db)
+        ensure_mysql_class_level_migration(db)
         ensure_mysql_indexes(db)
         ensure_mysql_bill_month_guard(db)
         ensure_mysql_certificate_migration(db)
@@ -239,6 +243,7 @@ def normalize_mysql_schema(db) -> None:
     ensure_mysql_attendance_alert_review_migration(db)
     ensure_mysql_staff_account_migration(db)
     ensure_mysql_routine_migration(db)
+    ensure_mysql_class_level_migration(db)
     ensure_mysql_indexes(db)
     ensure_mysql_bill_month_guard(db)
     ensure_mysql_certificate_migration(db)
@@ -487,6 +492,44 @@ def ensure_mysql_routine_migration(db) -> None:
         db.execute("INSERT INTO schema_migrations (version,migration_name) VALUES (?,?)", (ROUTINE_VERSION, ROUTINE_NAME))
 
 
+def _routine_seed_rows():
+    subjects = {
+        "8": [["Math (B.T.)", "Science (K.B.)"], ["Math (B.T.)", "Science (S.A.)"], ["Math (B.T.)", "Science (S.A.)"], ["Science (J.S.)", "Math (B.T.)"], ["Nepali (B.A.)", "Science (K.B.)"], ["Math (B.T.)", "Nepali (B.A.)"]],
+        "9": [["Nepali (S.A.)", "OPT. Math/Eco."], ["Nepali (S.A.)", "Science (K.B.)"], ["OPT. Math/Eco.", "Science (K.B.)"], ["Math (B.T.)", "Science (K.B.)"], ["OPT. Math/Eco.", "Math (B.T.)"], ["OPT. Math/Eco.", "Math (B.T.)"]],
+        "10": [["OPT. Math/Eco.", "Math (B.T. & Y.C.)"], ["OPT. Math/Eco.", "Math (B.T. & Y.C.)"], ["Nepali (S.A. & B.A.)", "Math (B.T. & Y.C.)"], ["Nepali (S.A. & B.A.)", "Science (J.S. & B.N.)"], ["Math (B.T.)", "Science (S.A. & B.N.)"], ["Science (S.A. & B.N.)", "OPT. Math (S.C. & Y.C.)"]],
+        "12": [["Physics", "Chemistry", "Bio/Com"], ["Physics", "Math", "Chemistry"], ["Physics", "Math", "Chemistry"], ["Physics", "Math", "Bio/Com"], ["Physics", "Math", "Bio/Com"], ["Nepali", "Chemistry", "Math"]],
+    }
+    days = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday")
+    return [(level, day, f"{period}st" if period == 1 else f"{period}nd" if period == 2 else f"{period}rd", subject)
+            for level, weekly in subjects.items() for day, periods in zip(days, weekly)
+            for period, subject in enumerate(periods, 1)]
+
+
+def ensure_mysql_class_level_migration(db) -> None:
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS class_levels (id INTEGER AUTO_INCREMENT PRIMARY KEY,"
+        "level_name VARCHAR(100) NOT NULL UNIQUE,status VARCHAR(30) NOT NULL DEFAULT 'Active',"
+        "remarks TEXT,created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB"
+    )
+    if not _mysql_column_exists(db, "students", "class_level_id"):
+        db.execute("ALTER TABLE students ADD COLUMN class_level_id INTEGER NULL")
+    if not _mysql_column_exists(db, "class_routines", "class_level_id"):
+        db.execute("ALTER TABLE class_routines ADD COLUMN class_level_id INTEGER NULL")
+    db.execute("INSERT IGNORE INTO class_levels (level_name) SELECT DISTINCT class_name FROM students WHERE class_name IS NOT NULL AND class_name<>''")
+    for level in ("8", "9", "10", "12"):
+        db.execute("INSERT IGNORE INTO class_levels (level_name) VALUES (?)", (level,))
+    db.execute("UPDATE students s JOIN class_levels cl ON cl.level_name=s.class_name SET s.class_level_id=cl.id WHERE s.class_level_id IS NULL")
+    db.execute("UPDATE class_routines r JOIN class_levels cl ON cl.level_name=r.class_name SET r.class_level_id=cl.id WHERE r.class_level_id IS NULL")
+    count = db.query_one("SELECT COUNT(*) total FROM class_routines")
+    if count and int(count["total"] or 0) == 0:
+        for level, day, period, subject in _routine_seed_rows():
+            class_row = db.query_one("SELECT id FROM class_levels WHERE level_name=?", (level,))
+            db.execute("INSERT INTO class_routines (class_name,class_level_id,day_of_week,period_label,subject_name,status) VALUES (?,?,?,?,?,'Active')", (level, class_row["id"], day, period, subject))
+    applied = db.query_one("SELECT version FROM schema_migrations WHERE version=?", (CLASS_LEVEL_VERSION,))
+    if not applied:
+        db.execute("INSERT INTO schema_migrations (version,migration_name) VALUES (?,?)", (CLASS_LEVEL_VERSION, CLASS_LEVEL_NAME))
+
+
 def ensure_mysql_bill_month_guard(db) -> None:
     """Enforce the cross-table bill-month rule without a redundant column."""
     definitions = {
@@ -664,10 +707,28 @@ def normalize_sqlite_schema(path) -> None:
               FOREIGN KEY(teacher_id) REFERENCES teachers(id) ON DELETE SET NULL,
               FOREIGN KEY(course_id) REFERENCES courses(id) ON DELETE SET NULL
             );
+            CREATE TABLE IF NOT EXISTS class_levels (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,level_name TEXT NOT NULL UNIQUE,
+              status TEXT NOT NULL DEFAULT 'Active',remarks TEXT,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
         if "class_count" not in _sqlite_columns(connection, "salary_payouts"):
             connection.execute("ALTER TABLE salary_payouts ADD COLUMN class_count INTEGER NOT NULL DEFAULT 0")
+        if "class_level_id" not in _sqlite_columns(connection, "students"):
+            connection.execute("ALTER TABLE students ADD COLUMN class_level_id INTEGER")
+        if "class_level_id" not in _sqlite_columns(connection, "class_routines"):
+            connection.execute("ALTER TABLE class_routines ADD COLUMN class_level_id INTEGER")
+        connection.execute("INSERT OR IGNORE INTO class_levels (level_name) SELECT DISTINCT class_name FROM students WHERE class_name IS NOT NULL AND class_name<>''")
+        for level in ("8", "9", "10", "12"):
+            connection.execute("INSERT OR IGNORE INTO class_levels (level_name) VALUES (?)", (level,))
+        connection.execute("UPDATE students SET class_level_id=(SELECT id FROM class_levels WHERE level_name=students.class_name) WHERE class_level_id IS NULL")
+        connection.execute("UPDATE class_routines SET class_level_id=(SELECT id FROM class_levels WHERE level_name=class_routines.class_name) WHERE class_level_id IS NULL")
+        if connection.execute("SELECT COUNT(*) FROM class_routines").fetchone()[0] == 0:
+            for level, day, period, subject in _routine_seed_rows():
+                class_id = connection.execute("SELECT id FROM class_levels WHERE level_name=?", (level,)).fetchone()[0]
+                connection.execute("INSERT INTO class_routines (class_name,class_level_id,day_of_week,period_label,subject_name,status) VALUES (?,?,?,?,?,'Active')", (level, class_id, day, period, subject))
         connection.execute(
             "INSERT OR IGNORE INTO staff_payment_accounts "
             "(teacher_id,account_name,account_number,account_holder,bank_name,status) "
@@ -781,6 +842,10 @@ def normalize_sqlite_schema(path) -> None:
         connection.execute(
             "INSERT OR IGNORE INTO schema_migrations (version,migration_name) VALUES (?,?)",
             (ROUTINE_VERSION, ROUTINE_NAME),
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version,migration_name) VALUES (?,?)",
+            (CLASS_LEVEL_VERSION, CLASS_LEVEL_NAME),
         )
         connection.commit()
     except Exception:
