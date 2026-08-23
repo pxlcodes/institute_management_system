@@ -162,6 +162,46 @@ class AttendanceService:
             }
         return {**summary, "calendar_days": calendar_days}
 
+    def teacher_period_summary(self, staff_id: int, salary_month: str) -> dict:
+        """Count scheduled routine periods for per-class/per-period staff pay."""
+        start_at, end_at, calendar_days = self._month_range(salary_month, "Salary month")
+        start_date = datetime.fromisoformat(start_at).date()
+        end_date = datetime.fromisoformat(end_at).date()
+        rows = self.repository.db.query(
+            "SELECT day_of_week FROM class_routines WHERE teacher_id=? AND status='Active'",
+            (int(staff_id),),
+        )
+        routine_days = [str(row["day_of_week"]) for row in rows]
+        periods = sum(
+            routine_days.count(self._day_name(start_date + timedelta(days=offset)))
+            for offset in range((end_date - start_date).days + 1)
+        )
+        return {"scheduled_classes": periods, "routine_days": sorted(set(routine_days)), "calendar_days": calendar_days}
+
+    @staticmethod
+    def _day_name(value) -> str:
+        return ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")[value.weekday()]
+
+    def _working_dates_for_class(self, class_name: str, start_date, end_date) -> list:
+        if not class_name or end_date < start_date:
+            return []
+        rows = self.repository.db.query(
+            "SELECT DISTINCT day_of_week FROM class_routines WHERE class_name=? AND status='Active'",
+            (class_name,),
+        )
+        routine_days = {str(row["day_of_week"]) for row in rows}
+        return [
+            start_date + timedelta(days=offset)
+            for offset in range((end_date - start_date).days + 1)
+            if self._day_name(start_date + timedelta(days=offset)) in routine_days
+        ]
+
+    @staticmethod
+    def _business_date_to_ad(value: str):
+        if "/" in value:
+            return nepali.date(*(int(part) for part in value.split("/"))).to_datetime_date()
+        return datetime.fromisoformat(value).date()
+
     @staticmethod
     def _month_range(month_value: str, field_name: str) -> tuple[str, str, int]:
         month_value = validate_month(month_value, field_name)
@@ -210,8 +250,7 @@ class AttendanceService:
     def student_attendance_alerts(self) -> list[dict]:
         """Return review alerts for active enrolled students with attendance gaps.
 
-        These are calendar-day indicators; administrators should account for holidays and
-        approved leave before taking action.
+        Students are evaluated only on active routine days for their saved class/level.
         """
         consecutive_limit = max(1, self.settings.get_int("attendance_consecutive_absence_days", 3)) if self.settings else 3
         monthly_limit = max(1, self.settings.get_int("attendance_monthly_irregular_days", 5)) if self.settings else 5
@@ -239,24 +278,23 @@ class AttendanceService:
         month_start_ad = datetime.fromisoformat(start_at).date()
         for row in rows:
             try:
-                start_value = str(row["enrollment_start"])
-                if "/" in start_value:
-                    start_parts = [int(value) for value in start_value.split("/")]
-                    enrollment_start = nepali.date(*start_parts).to_datetime_date()
-                else:
-                    enrollment_start = datetime.fromisoformat(start_value).date()
+                enrollment_start = self._business_date_to_ad(str(row["enrollment_start"]))
             except Exception:
                 continue
             if enrollment_start > today_ad:
                 continue
-            last_seen = row["last_seen"]
-            last_date = datetime.fromisoformat(str(last_seen)).date() if last_seen else None
-            anchor = max(enrollment_start, last_date) if last_date else enrollment_start
-            consecutive_days = max(0, (today_ad - anchor).days)
             relevant_month_start = max(month_start_ad, enrollment_start)
-            expected_days = max(0, (today_ad - relevant_month_start).days + 1)
-            present_days = len(monthly_punches.get(int(row["id"]), set()))
-            missing_days = max(0, expected_days - present_days)
+            working_dates = self._working_dates_for_class(row["class_name"] or "", enrollment_start, today_ad)
+            if not working_dates:
+                continue
+            present = monthly_punches.get(int(row["id"]), set())
+            monthly_working = [day for day in working_dates if day >= relevant_month_start]
+            missing_days = sum(day not in present for day in monthly_working)
+            consecutive_days = 0
+            for day in reversed(working_dates):
+                if day in present:
+                    break
+                consecutive_days += 1
             reasons = []
             if consecutive_days >= consecutive_limit:
                 reasons.append(f"No punch for {consecutive_days} day(s)")
@@ -309,14 +347,12 @@ class AttendanceService:
         absent = []
         for row in rows:
             try:
-                value = str(row["enrollment_start"])
-                if "/" in value:
-                    started = nepali.date(*(int(part) for part in value.split("/"))).to_datetime_date()
-                else:
-                    started = datetime.fromisoformat(value).date()
+                started = self._business_date_to_ad(str(row["enrollment_start"]))
             except Exception:
                 continue
-            if started <= today_ad:
+            if started <= today_ad and self._working_dates_for_class(
+                row["class_name"] or "", today_ad, today_ad
+            ):
                 absent.append(row)
         return absent
 

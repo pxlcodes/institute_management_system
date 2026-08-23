@@ -53,6 +53,7 @@ from elh.ui.desktop.pages import (
     PosPrinterPage,
     CertificatesPage,
     WorkItemsPage,
+    RoutinesPage,
 )
 
 # ---------------------------------------------------------------------------
@@ -65,6 +66,7 @@ NAV_ICONS = {
     "Salary Payouts": "💰", "Income": "📈", "Expenses": "📉",
     "Accounts": "🏦", "Account Transfers": "🔄", "Ledger": "📒",
     "Attendance Device": "🕒", "POS Printer": "🖨", "Device Health": "🩺",
+    "Class Routine": "🗓",
 }
 
 
@@ -282,19 +284,22 @@ class ManagementApp(tk.Tk):
         content.rowconfigure(0, weight=1);content.columnconfigure(0, weight=1)
 
         menu_groups = [
-            ("MAIN", [
+            ("OPERATIONS", [
                 ("Dashboard", DashboardPage, "dashboard.view"),
                 ("Tasks & Bugs", WorkItemsPage, "dashboard.view"),
+                ("Reports", ReportsPage, "reports.view"),
+            ]),
+            ("ACADEMIC", [
                 ("Students", StudentsPage, "students.manage"),
                 ("Enrollments", EnrollmentsPage, "enrollments.manage"),
                 ("Due Bills", DueBillsPage, "billing.manage"),
                 ("Certificates", CertificatesPage, "certificates.manage"),
                 ("Student Accounts", StudentTransactionsPage, "billing.manage"),
-                ("Reports", ReportsPage, "reports.view"),
-            ]),
-            ("SETUP & STAFF", [
                 ("Courses", CoursesPage, "master_data.manage"),
+                ("Class Routine", RoutinesPage, "master_data.manage"),
                 ("Schools", SchoolsPage, "master_data.manage"),
+            ]),
+            ("STAFF & PAYROLL", [
                 ("Staff", TeachersPage, "staff.manage"),
                 ("Staff Advances", AdvancesPage, "payroll.manage"),
                 ("Salary Payouts", SalaryPage, "payroll.manage"),
@@ -306,7 +311,7 @@ class ManagementApp(tk.Tk):
                 ("Account Transfers", TransfersPage, "finance.manage"),
                 ("Ledger", LedgerPage, "finance.manage"),
             ]),
-            ("DEVICES", [
+            ("DEVICES & SYSTEM", [
                 ("Attendance Device", AttendancePage, "devices.manage"),
                 ("POS Printer", PosPrinterPage, "devices.manage"),
                 ("Device Health", DeviceHealthPage, "devices.manage"),

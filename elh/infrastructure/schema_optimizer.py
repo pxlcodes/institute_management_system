@@ -32,7 +32,9 @@ ATTENDANCE_ALERT_REVIEW_VERSION = 9
 ATTENDANCE_ALERT_REVIEW_NAME = "add attendance alert review history"
 STAFF_ACCOUNT_VERSION = 10
 STAFF_ACCOUNT_NAME = "add staff payment accounts and transaction statements"
-LATEST_SCHEMA_VERSION = STAFF_ACCOUNT_VERSION
+ROUTINE_VERSION = 11
+ROUTINE_NAME = "add academic routines and per-period payroll reference"
+LATEST_SCHEMA_VERSION = ROUTINE_VERSION
 
 
 INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
@@ -68,6 +70,8 @@ INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("device_user_mappings", "idx_device_mapping_person", ("person_type", "person_id", "status")),
     ("attendance_logs", "idx_attendance_person_time", ("person_type", "person_id", "occurred_at")),
     ("attendance_logs", "idx_attendance_time_person", ("occurred_at", "person_type", "person_id")),
+    ("class_routines", "idx_routines_class_day", ("class_name", "day_of_week", "status")),
+    ("class_routines", "idx_routines_teacher_day", ("teacher_id", "day_of_week", "status")),
     ("due_bills", "idx_due_bills_status_due", ("status", "due_date")),
     ("due_bills", "idx_due_bills_issue", ("issue_date",)),
     ("course_certificates", "idx_certificates_certify_date", ("certify_date",)),
@@ -186,6 +190,7 @@ def normalize_mysql_schema(db) -> None:
         ensure_mysql_work_items_migration(db)
         ensure_mysql_attendance_alert_review_migration(db)
         ensure_mysql_staff_account_migration(db)
+        ensure_mysql_routine_migration(db)
         ensure_mysql_indexes(db)
         ensure_mysql_bill_month_guard(db)
         ensure_mysql_certificate_migration(db)
@@ -233,6 +238,7 @@ def normalize_mysql_schema(db) -> None:
     ensure_mysql_work_items_migration(db)
     ensure_mysql_attendance_alert_review_migration(db)
     ensure_mysql_staff_account_migration(db)
+    ensure_mysql_routine_migration(db)
     ensure_mysql_indexes(db)
     ensure_mysql_bill_month_guard(db)
     ensure_mysql_certificate_migration(db)
@@ -462,6 +468,25 @@ def ensure_mysql_staff_account_migration(db) -> None:
         db.execute("INSERT INTO schema_migrations (version,migration_name) VALUES (?,?)", (STAFF_ACCOUNT_VERSION, STAFF_ACCOUNT_NAME))
 
 
+def ensure_mysql_routine_migration(db) -> None:
+    """Store the weekly teaching plan without inferring absences on off days."""
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS class_routines ("
+        "id INTEGER AUTO_INCREMENT PRIMARY KEY,class_name VARCHAR(100) NOT NULL,"
+        "day_of_week VARCHAR(20) NOT NULL,period_label VARCHAR(100) NOT NULL,"
+        "subject_name VARCHAR(255) NOT NULL,teacher_id INTEGER NULL,course_id INTEGER NULL,"
+        "start_time VARCHAR(20),end_time VARCHAR(20),status VARCHAR(30) NOT NULL DEFAULT 'Active',"
+        "remarks TEXT,created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "FOREIGN KEY(teacher_id) REFERENCES teachers(id) ON DELETE SET NULL,"
+        "FOREIGN KEY(course_id) REFERENCES courses(id) ON DELETE SET NULL) ENGINE=InnoDB"
+    )
+    if not _mysql_column_exists(db, "salary_payouts", "class_count"):
+        db.execute("ALTER TABLE salary_payouts ADD COLUMN class_count INTEGER NOT NULL DEFAULT 0")
+    applied = db.query_one("SELECT version FROM schema_migrations WHERE version=?", (ROUTINE_VERSION,))
+    if not applied:
+        db.execute("INSERT INTO schema_migrations (version,migration_name) VALUES (?,?)", (ROUTINE_VERSION, ROUTINE_NAME))
+
+
 def ensure_mysql_bill_month_guard(db) -> None:
     """Enforce the cross-table bill-month rule without a redundant column."""
     definitions = {
@@ -631,8 +656,18 @@ def normalize_sqlite_schema(path) -> None:
               FOREIGN KEY(staff_account_id) REFERENCES staff_payment_accounts(id) ON DELETE RESTRICT,
               FOREIGN KEY(paid_from_account_id) REFERENCES accounts(id) ON DELETE SET NULL
             );
+            CREATE TABLE IF NOT EXISTS class_routines (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,class_name TEXT NOT NULL,day_of_week TEXT NOT NULL,
+              period_label TEXT NOT NULL,subject_name TEXT NOT NULL,teacher_id INTEGER,course_id INTEGER,
+              start_time TEXT,end_time TEXT,status TEXT NOT NULL DEFAULT 'Active',remarks TEXT,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              FOREIGN KEY(teacher_id) REFERENCES teachers(id) ON DELETE SET NULL,
+              FOREIGN KEY(course_id) REFERENCES courses(id) ON DELETE SET NULL
+            );
             """
         )
+        if "class_count" not in _sqlite_columns(connection, "salary_payouts"):
+            connection.execute("ALTER TABLE salary_payouts ADD COLUMN class_count INTEGER NOT NULL DEFAULT 0")
         connection.execute(
             "INSERT OR IGNORE INTO staff_payment_accounts "
             "(teacher_id,account_name,account_number,account_holder,bank_name,status) "
@@ -742,6 +777,10 @@ def normalize_sqlite_schema(path) -> None:
         connection.execute(
             "INSERT OR IGNORE INTO schema_migrations (version,migration_name) VALUES (?,?)",
             (STAFF_ACCOUNT_VERSION, STAFF_ACCOUNT_NAME),
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version,migration_name) VALUES (?,?)",
+            (ROUTINE_VERSION, ROUTINE_NAME),
         )
         connection.commit()
     except Exception:

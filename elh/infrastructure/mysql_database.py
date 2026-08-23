@@ -363,7 +363,7 @@ CREATE TABLE IF NOT EXISTS salary_payouts (
  basic_salary DECIMAL(14,2) NOT NULL DEFAULT 0, extra_payment DECIMAL(14,2) NOT NULL DEFAULT 0,
  bonus DECIMAL(14,2) NOT NULL DEFAULT 0, allowance DECIMAL(14,2) NOT NULL DEFAULT 0,
  advance_deduction DECIMAL(14,2) NOT NULL DEFAULT 0, other_deduction DECIMAL(14,2) NOT NULL DEFAULT 0,
- attendance_days INTEGER NOT NULL DEFAULT 0, working_hours DECIMAL(14,2) NOT NULL DEFAULT 0,
+ attendance_days INTEGER NOT NULL DEFAULT 0, working_hours DECIMAL(14,2) NOT NULL DEFAULT 0, class_count INTEGER NOT NULL DEFAULT 0,
  net_salary DECIMAL(14,2) NOT NULL DEFAULT 0, payment_date VARCHAR(30) NOT NULL, paid_from_account_id INTEGER NOT NULL,
  payment_method VARCHAR(100), voucher_no VARCHAR(255), status VARCHAR(50) NOT NULL DEFAULT 'Paid', remarks TEXT,
  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE KEY uq_teacher_salary_month(teacher_id, salary_month),

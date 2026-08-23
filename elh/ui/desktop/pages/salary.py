@@ -22,6 +22,7 @@ class SalaryPage(CrudPage, AccountSelectionMixin, PaymentProofMixin):
         super().__init__(parent, app)
         self.teacher_map = {}
         self.account_map = {}
+        self.selected_salary_type = "Monthly Salary"
 
         ttk.Label(self, text="Salary Payouts", style="Title.TLabel").pack(anchor="w")
         form = self.create_form_dialog("Salary Payment", padding=8)
@@ -31,6 +32,7 @@ class SalaryPage(CrudPage, AccountSelectionMixin, PaymentProofMixin):
             "teacher": tk.StringVar(), "month": tk.StringVar(value=current_month()),
             "attendance_days": tk.StringVar(value="0"),
             "working_hours": tk.StringVar(value="0"),
+            "class_count": tk.StringVar(value="0"),
             "basic": tk.StringVar(value="0"), "extra": tk.StringVar(value="0"),
             "bonus": tk.StringVar(value="0"), "allowance": tk.StringVar(value="0"),
             "advance": tk.StringVar(value="0"), "other": tk.StringVar(value="0"),
@@ -47,6 +49,7 @@ class SalaryPage(CrudPage, AccountSelectionMixin, PaymentProofMixin):
         self.month_entry.bind("<FocusOut>", lambda _event: self.calculate_attendance(silent=True))
         fb.entry("Attendance Days (optional)", self.vars["attendance_days"])
         fb.entry("Working Hours (optional)", self.vars["working_hours"])
+        fb.entry("Scheduled Classes (per-period)", self.vars["class_count"])
         fb.entry("Basic Salary", self.vars["basic"])
         fb.entry("Extra Payment", self.vars["extra"])
         fb.entry("Bonus", self.vars["bonus"])
@@ -95,7 +98,7 @@ class SalaryPage(CrudPage, AccountSelectionMixin, PaymentProofMixin):
             area,
             [
                 ("id", "ID", 50), ("month", "Month", 85), ("teacher", "Staff Member", 170),
-                ("days", "Present Days", 90), ("hours", "Working Hours", 95),
+                ("days", "Present Days", 90), ("classes", "Classes", 70), ("hours", "Working Hours", 95),
                 ("gross", "Gross", 95), ("deduction", "Deductions", 100),
                 ("net", "Net Salary", 100), ("date", "Paid Date", 95),
                 ("account", "Paid From", 140),
@@ -106,8 +109,9 @@ class SalaryPage(CrudPage, AccountSelectionMixin, PaymentProofMixin):
     def teacher_selected(self, _event=None):
         teacher_id = self.teacher_map.get(self.vars["teacher"].get())
         if teacher_id:
-            row = self.db.query_one("SELECT basic_salary FROM teachers WHERE id=?", (teacher_id,))
+            row = self.db.query_one("SELECT basic_salary,salary_type FROM teachers WHERE id=?", (teacher_id,))
             self.vars["basic"].set(str(row["basic_salary"]))
+            self.selected_salary_type = str(row["salary_type"] or "Monthly Salary")
             self.calculate_attendance(silent=True)
 
     def calculate_attendance(self, _event=None, silent=False):
@@ -119,11 +123,17 @@ class SalaryPage(CrudPage, AccountSelectionMixin, PaymentProofMixin):
             summary = self.app.services.attendance.staff_month_summary(teacher_id, month)
             self.vars["attendance_days"].set(str(summary["days"]))
             self.vars["working_hours"].set(f"{summary['hours']:.2f}")
+            routine = self.app.services.attendance.teacher_period_summary(teacher_id, month)
+            self.vars["class_count"].set(str(routine["scheduled_classes"]))
+            period_note = (
+                f" Scheduled periods: {routine['scheduled_classes']} (used for per-class pay)."
+                if self.selected_salary_type == "Per Class Payment" else ""
+            )
             self.attendance_label.configure(
                 text=(
                     f"Attendance reference: {summary['days']} present days, "
                     f"{summary['hours']:.2f} working hours, {summary['punches']} punches. "
-                    f"Estimate uses {summary['calendar_days']} calendar days; it is optional."
+                    f"Estimate uses {summary['calendar_days']} calendar days; it is optional.{period_note}"
                 )
             )
             return summary
@@ -164,9 +174,18 @@ class SalaryPage(CrudPage, AccountSelectionMixin, PaymentProofMixin):
         )
         return int(days), hours
 
+    def class_count_value(self) -> int:
+        count = parse_amount(self.vars["class_count"].get() or "0", "Scheduled classes")
+        if not float(count).is_integer() or count < 0:
+            raise ValueError("Scheduled classes must be a non-negative whole number.")
+        return int(count)
+
     def calculate_net(self) -> float:
         try:
             basic = parse_amount(self.vars["basic"].get() or "0", "Basic salary")
+            class_count = self.class_count_value()
+            if self.selected_salary_type == "Per Class Payment":
+                basic *= class_count
             extra = parse_amount(self.vars["extra"].get() or "0", "Extra payment")
             bonus = parse_amount(self.vars["bonus"].get() or "0", "Bonus")
             allowance = parse_amount(self.vars["allowance"].get() or "0", "Allowance")
@@ -190,6 +209,9 @@ class SalaryPage(CrudPage, AccountSelectionMixin, PaymentProofMixin):
             month = self.vars["month"].get().strip()
             month=validate_month(month,"Salary month")
             basic = parse_amount(self.vars["basic"].get() or "0", "Basic salary")
+            class_count = self.class_count_value()
+            if self.selected_salary_type == "Per Class Payment":
+                basic *= class_count
             extra = parse_amount(self.vars["extra"].get() or "0", "Extra payment")
             bonus = parse_amount(self.vars["bonus"].get() or "0", "Bonus")
             allowance = parse_amount(self.vars["allowance"].get() or "0", "Allowance")
@@ -209,14 +231,14 @@ class SalaryPage(CrudPage, AccountSelectionMixin, PaymentProofMixin):
                     INSERT INTO salary_payouts
                     (teacher_id, salary_month, basic_salary, extra_payment, bonus,
                      allowance, advance_deduction, other_deduction, net_salary,
-                     attendance_days, working_hours,
+                     attendance_days, working_hours, class_count,
                      payment_date, paid_from_account_id, payment_method,
                      voucher_no, status, remarks)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Paid', ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Paid', ?)
                     """,
                     (
                         teacher_id, month, basic, extra, bonus, allowance, advance, other,
-                        net, attendance_days, working_hours, pay_date, account_id,
+                        net, attendance_days, working_hours, class_count, pay_date, account_id,
                         self.vars["method"].get(),
                         self.vars["voucher"].get().strip(), self.vars["remarks"].get().strip(),
                     ),
@@ -306,6 +328,7 @@ class SalaryPage(CrudPage, AccountSelectionMixin, PaymentProofMixin):
         self.vars["month"].set(current_month())
         self.vars["attendance_days"].set("0")
         self.vars["working_hours"].set("0")
+        self.vars["class_count"].set("0")
         self.vars["basic"].set("0")
         self.vars["extra"].set("0")
         self.vars["bonus"].set("0")
@@ -343,7 +366,7 @@ class SalaryPage(CrudPage, AccountSelectionMixin, PaymentProofMixin):
             self.tree.insert(
                 "", "end",
                 values=(r["id"], r["salary_month"], r["teacher_name"],
-                        r["attendance_days"], money(r["working_hours"]), money(gross),
+                        r["attendance_days"], r["class_count"], money(r["working_hours"]), money(gross),
                         money(deductions), money(r["net_salary"]), r["payment_date"],
                         r["account_name"])
             )

@@ -60,6 +60,7 @@ class SQLiteDatabase:
                 ("schools", "emis_id", "TEXT"),
                 ("salary_payouts", "attendance_days", "INTEGER NOT NULL DEFAULT 0"),
                 ("salary_payouts", "working_hours", "REAL NOT NULL DEFAULT 0"),
+                ("salary_payouts", "class_count", "INTEGER NOT NULL DEFAULT 0"),
                 ("app_users", "display_name", "TEXT"),
                 ("app_users", "email", "TEXT"),
                 ("app_users", "must_change_password", "INTEGER NOT NULL DEFAULT 0"),
