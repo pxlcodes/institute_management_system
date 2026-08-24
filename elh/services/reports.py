@@ -45,10 +45,47 @@ class ReportsService:
         data = [[r["device_user_id"], r["device_name"], r["punches"], str(r["first_seen"]), str(r["last_seen"])] for r in rows]
         return self._build(output or self._path(f"attendance_unregistered_{start_date.replace('/','-')}_{end_date.replace('/','-')}.pdf"), "ATTENDING DEVICE USERS NOT REGISTERED IN ELH", start_date, end_date, ["Device ID", "Name on Device", "Punches", "First Punch", "Last Punch"], data, ["", "TOTAL UNREGISTERED", str(len(rows)), "", ""])
 
-    def student_register_pdf(self, output: Path | None = None) -> Path:
-        rows = self.db.query("SELECT s.id,s.student_name,s.class_name,COALESCE(sc.school_name,'') school_name,s.contact,s.joining_date,s.status FROM students s LEFT JOIN schools sc ON sc.id=s.school_id ORDER BY s.student_name")
-        data = [[r["id"],r["student_name"],r["class_name"] or "",r["school_name"],r["contact"] or "",r["joining_date"],r["status"]] for r in rows]
-        return self._build(output or self._path("student_register.pdf"), "STUDENT REGISTER", "All records", "Current", ["ID","Student","Class","School","Contact","Joining","Status"], data, ["","TOTAL STUDENTS",str(len(rows)),"","","",""])
+    def student_register_pdf(
+        self,
+        class_level_id: int | None = None,
+        school_id: int | None = None,
+        output: Path | None = None,
+    ) -> Path:
+        """Build a current student register, optionally for one class or school."""
+        where: list[str] = []
+        params: list[int] = []
+        if class_level_id:
+            where.append("s.class_level_id=?")
+            params.append(int(class_level_id))
+        if school_id:
+            where.append("s.school_id=?")
+            params.append(int(school_id))
+        condition = " WHERE " + " AND ".join(where) if where else ""
+        rows = self.db.query(
+            "SELECT s.id,s.student_name,COALESCE(cl.level_name,s.class_name,'') class_name,"
+            "COALESCE(sc.school_name,'') school_name,s.contact,s.joining_date,s.status "
+            "FROM students s "
+            "LEFT JOIN class_levels cl ON cl.id=s.class_level_id "
+            "LEFT JOIN schools sc ON sc.id=s.school_id" + condition +
+            " ORDER BY COALESCE(cl.level_name,s.class_name,''),sc.school_name,s.student_name",
+            tuple(params),
+        )
+        data = [[r["id"],r["student_name"],r["class_name"],r["school_name"],r["contact"] or "",r["joining_date"],r["status"]] for r in rows]
+        scope: list[str] = []
+        if class_level_id:
+            row = self.db.query_one("SELECT level_name FROM class_levels WHERE id=?", (class_level_id,))
+            scope.append(f"Class: {row['level_name'] if row else class_level_id}")
+        if school_id:
+            row = self.db.query_one("SELECT school_name FROM schools WHERE id=?", (school_id,))
+            scope.append(f"School: {row['school_name'] if row else school_id}")
+        suffix = "_".join(str(value) for value in (class_level_id, school_id) if value) or "all"
+        return self._build(
+            output or self._path(f"student_register_{suffix}.pdf"),
+            "STUDENT REGISTER" + (" — " + " | ".join(scope) if scope else ""),
+            " | ".join(scope) if scope else "All records", "Current",
+            ["ID","Student","Class","School","Contact","Joining","Status"], data,
+            ["","TOTAL STUDENTS",str(len(rows)),"","","",""]
+        )
 
     def class_school_analysis_pdf(self, output: Path | None = None) -> Path:
         classes = self.db.query("SELECT COALESCE(cl.level_name,s.class_name,'Not assigned') label,COUNT(*) total FROM students s LEFT JOIN class_levels cl ON cl.id=s.class_level_id GROUP BY COALESCE(cl.level_name,s.class_name,'Not assigned') ORDER BY label")
