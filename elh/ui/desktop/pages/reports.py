@@ -1,69 +1,117 @@
 from __future__ import annotations
+
 import os
 import tkinter as tk
-import nepali_datetime as nepali
 from pathlib import Path
-from tkinter import messagebox,ttk
-from elh.ui.desktop.components import BasePage,FormBuilder
-from elh.ui.desktop.helpers import today_iso,validate_date
+from tkinter import messagebox, ttk
+
+import nepali_datetime as nepali
+
+from elh.ui.desktop.components import BasePage, FormBuilder
+from elh.ui.desktop.helpers import today_iso, validate_date
 
 
 class ReportsPage(BasePage):
-    def __init__(self,parent,app):
-        super().__init__(parent,app)
-        ttk.Label(self,text="Reports & Printing",style="Title.TLabel").pack(anchor="w")
-        ttk.Label(self,text="Generate properly headed PDF reports using your saved company and PAN details. The selected period is applied to finance and attendance reports; registers are current snapshots.").pack(anchor="w",pady=(2,14))
-        card=ttk.LabelFrame(self,text="Report Period (Nepali BS)",padding=18);card.pack(fill="x")
-        self.start=tk.StringVar(value=today_iso());self.end=tk.StringVar(value=today_iso());fb=FormBuilder(card);fb.entry("Start Date *",self.start);fb.entry("End Date *",self.end)
-        tabs=ttk.Notebook(self);tabs.pack(fill="both",expand=True,pady=16)
-        finance=ttk.Frame(tabs,padding=18);academic=ttk.Frame(tabs,padding=18);attendance=ttk.Frame(tabs,padding=18);people=ttk.Frame(tabs,padding=18)
-        tabs.add(finance,text="Finance & Payments");tabs.add(academic,text="Academic");tabs.add(attendance,text="Attendance Reconciliation");tabs.add(people,text="People & Staff")
-        self.actions(finance,"Student payment collection and complete account movements.",[("Open Paid Transactions PDF",lambda:self.run("paid",False)),("Print Paid Transactions",lambda:self.run("paid",True)),("Open Account Ledger PDF",lambda:self.run("ledger",False)),("Print Account Ledger",lambda:self.run("ledger",True))])
-        self._build_academic_reports(academic)
-        self.actions(attendance,"Shows device users who have punched but are not linked to a Student or Staff record. This is the missing-registration list.",[("Open Unregistered Attendance PDF",lambda:self.run("unregistered",False)),("Print Unregistered Attendance",lambda:self.run("unregistered",True))])
-        self.actions(people,"Current staff register for administrative and payroll review.",[("Open Staff Register PDF",lambda:self.run("staff",False)),("Print Staff Register",lambda:self.run("staff",True))])
+    """A compact report chooser; table pages print their own current view."""
 
-    @staticmethod
-    def actions(parent, description, actions):
-        ttk.Label(parent,text=description,style="Hint.TLabel",wraplength=720,justify="left").pack(anchor="w",pady=(0,12))
-        for label,command in actions: ttk.Button(parent,text=label,style="Accent.TButton" if label.startswith("Open") else "TButton",command=command).pack(anchor="w",pady=4)
+    def __init__(self, parent, app):
+        super().__init__(parent, app)
+        ttk.Label(self, text="Reports & Printing", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            self,
+            text="Choose one report, then open its PDF or send it to the normal printer. "
+                 "For searched, sorted, or filtered tables, use “Print current table” on that module.",
+            style="Hint.TLabel", wraplength=900, justify="left",
+        ).pack(anchor="w", pady=(2, 14))
+        card = ttk.LabelFrame(self, text="Report Period (Nepali BS)", padding=12)
+        card.pack(fill="x")
+        self.start = tk.StringVar(value=today_iso())
+        self.end = tk.StringVar(value=today_iso())
+        form = FormBuilder(card)
+        form.entry("Start Date *", self.start)
+        form.entry("End Date *", self.end)
 
-    def _build_academic_reports(self, parent) -> None:
-        ttk.Label(parent,text="Current registered students, class/school count analysis, and weekly routines.",style="Hint.TLabel",wraplength=720,justify="left").pack(anchor="w",pady=(0,12))
-        filter_card=ttk.LabelFrame(parent,text="Class-wise / School-wise Student Register",padding=12)
-        filter_card.pack(fill="x",pady=(0,12))
-        self.report_class=tk.StringVar(value="All classes")
-        self.report_school=tk.StringVar(value="All schools")
-        self.report_status=tk.StringVar(value="All")
-        classes=self.db.query("SELECT id,level_name FROM class_levels WHERE status='Active' ORDER BY level_name")
-        schools=self.db.query("SELECT id,school_name FROM schools WHERE status='Active' ORDER BY school_name")
-        self.report_class_map={"All classes":None,**{str(row["level_name"]):int(row["id"]) for row in classes}}
-        self.report_school_map={"All schools":None,**{f"{row['school_name']} (ID: {row['id']})":int(row["id"]) for row in schools}}
-        fb=FormBuilder(filter_card)
-        fb.combo("Class / Level",self.report_class,self.report_class_map,searchable=True,width=42)
-        fb.combo("School",self.report_school,self.report_school_map,searchable=True,width=42)
-        fb.combo("Student Status",self.report_status,["All","Active","Inactive"],width=42)
-        actions=ttk.Frame(filter_card);actions.grid(row=0,column=2,rowspan=3,padx=(14,0),sticky="ns")
-        ttk.Button(actions,text="Open Filtered Register PDF",style="Accent.TButton",command=lambda:self.run("filtered_students",False)).pack(fill="x",pady=(0,6))
-        ttk.Button(actions,text="Print Filtered Register",command=lambda:self.run("filtered_students",True)).pack(fill="x")
-        self.actions(parent,"Other academic reports.",[("Open All Student Register PDF",lambda:self.run("students",False)),("Print All Student Register",lambda:self.run("students",True)),("Open Enrollment Register PDF",lambda:self.run("enrollments",False)),("Print Enrollment Register",lambda:self.run("enrollments",True)),("Open Class & School Analysis PDF",lambda:self.run("analysis",False)),("Print Class & School Analysis",lambda:self.run("analysis",True)),("Open All Class Routines PDF",lambda:self.run("routine",False)),("Print All Class Routines",lambda:self.run("routine",True))])
+        tabs = ttk.Notebook(self)
+        tabs.pack(fill="both", expand=True, pady=16)
+        finance = ttk.Frame(tabs, padding=18)
+        academic = ttk.Frame(tabs, padding=18)
+        attendance = ttk.Frame(tabs, padding=18)
+        people = ttk.Frame(tabs, padding=18)
+        tabs.add(finance, text="Finance & Payments")
+        tabs.add(academic, text="Academic")
+        tabs.add(attendance, text="Attendance")
+        tabs.add(people, text="People & Staff")
+        self._report_selector(finance, "Finance report", {
+            "Paid Student Transactions": "paid", "Account Ledger": "ledger",
+        }, "The selected date period is used for finance reports.")
+        self._build_academic(academic)
+        self._report_selector(attendance, "Attendance report", {
+            "Attending Device Users Not Registered": "unregistered",
+        }, "Lists device users with punches who are not linked to an ELH student or staff record.")
+        self._report_selector(people, "People report", {"Staff Register": "staff"},
+                              "A current staff register for administrative and payroll review.")
 
-    def run(self,kind,print_now):
+    def _report_selector(self, parent, label, choices, description):
+        ttk.Label(parent, text=description, style="Hint.TLabel", wraplength=760, justify="left").pack(anchor="w", pady=(0, 12))
+        card = ttk.LabelFrame(parent, text="Choose report", padding=12)
+        card.pack(anchor="w", fill="x")
+        value = tk.StringVar(value=next(iter(choices)))
+        form = FormBuilder(card)
+        form.combo(label, value, list(choices), searchable=len(choices) > 4, width=48)
+        actions = ttk.Frame(card, style="Form.TFrame")
+        actions.grid(row=0, column=2, padx=(14, 0), sticky="ns")
+        ttk.Button(actions, text="Open PDF", style="Accent.TButton", command=lambda: self.run(choices[value.get()], False)).pack(fill="x", pady=(0, 6))
+        ttk.Button(actions, text="Print", command=lambda: self.run(choices[value.get()], True)).pack(fill="x")
+
+    def _build_academic(self, parent):
+        ttk.Label(parent, text="Select a report. Student and enrollment registers can be limited by class, school, and status.", style="Hint.TLabel", wraplength=800, justify="left").pack(anchor="w", pady=(0, 12))
+        card = ttk.LabelFrame(parent, text="Academic report", padding=12)
+        card.pack(anchor="w", fill="x")
+        self.academic_report = tk.StringVar(value="Student Register")
+        self.report_class = tk.StringVar(value="All classes")
+        self.report_school = tk.StringVar(value="All schools")
+        self.report_status = tk.StringVar(value="All")
+        classes = self.db.query("SELECT id,level_name FROM class_levels WHERE status='Active' ORDER BY level_name")
+        schools = self.db.query("SELECT id,school_name FROM schools WHERE status='Active' ORDER BY school_name")
+        self.report_class_map = {"All classes": None, **{str(row["level_name"]): int(row["id"]) for row in classes}}
+        self.report_school_map = {"All schools": None, **{f"{row['school_name']} (ID: {row['id']})": int(row["id"]) for row in schools}}
+        form = FormBuilder(card)
+        form.combo("Report", self.academic_report, ["Student Register", "Enrollment Register", "Class & School Analysis", "Weekly Class Routine"], width=42)
+        form.combo("Class / Level", self.report_class, self.report_class_map, searchable=True, width=42)
+        form.combo("School", self.report_school, self.report_school_map, searchable=True, width=42)
+        form.combo("Status", self.report_status, ["All", "Active", "Inactive"], width=42)
+        actions = ttk.Frame(card, style="Form.TFrame")
+        actions.grid(row=0, column=2, rowspan=4, padx=(14, 0), sticky="ns")
+        ttk.Button(actions, text="Open PDF", style="Accent.TButton", command=lambda: self.run(self._academic_kind(), False)).pack(fill="x", pady=(0, 6))
+        ttk.Button(actions, text="Print", command=lambda: self.run(self._academic_kind(), True)).pack(fill="x")
+
+    def _academic_kind(self) -> str:
+        return {
+            "Student Register": "filtered_students", "Enrollment Register": "enrollments",
+            "Class & School Analysis": "analysis", "Weekly Class Routine": "routine",
+        }[self.academic_report.get()]
+
+    def run(self, kind, print_now):
         try:
-            start=validate_date(self.start.get(),"Start date");end=validate_date(self.end.get(),"End date")
-            if end<start:raise ValueError("End date cannot be earlier than start date.")
-            service=self.app.services.reports
+            start = validate_date(self.start.get(), "Start date")
+            end = validate_date(self.end.get(), "End date")
+            if end < start:
+                raise ValueError("End date cannot be earlier than start date.")
+            service = self.app.services.reports
             if kind == "unregistered":
                 start_at = nepali.date(*map(int, start.split("/"))).to_datetime_date().isoformat() + " 00:00:00"
                 end_at = nepali.date(*map(int, end.split("/"))).to_datetime_date().isoformat() + " 23:59:59"
                 path = service.unregistered_attendance_pdf(start_at, end_at, start, end)
             elif kind == "filtered_students":
-                class_id=self.report_class_map.get(self.report_class.get())
-                school_id=self.report_school_map.get(self.report_school.get())
-                path=service.student_register_pdf(class_id,school_id,status=self.report_status.get())
+                path = service.student_register_pdf(self.report_class_map.get(self.report_class.get()), self.report_school_map.get(self.report_school.get()), status=self.report_status.get())
             elif kind == "enrollments":
-                path=service.enrollment_register_pdf(self.report_status.get())
+                path = service.enrollment_register_pdf(self.report_status.get())
             else:
-                path=(service.paid_transactions_pdf(start,end) if kind=="paid" else service.ledger_pdf(start,end) if kind=="ledger" else service.student_register_pdf() if kind=="students" else service.class_school_analysis_pdf() if kind=="analysis" else service.routine_pdf() if kind=="routine" else service.staff_register_pdf())
-            os.startfile(Path(path),"print" if print_now else "open")
-        except Exception as exc:messagebox.showerror("Report Error",str(exc),parent=self)
+                path = {
+                    "paid": service.paid_transactions_pdf(start, end), "ledger": service.ledger_pdf(start, end),
+                    "analysis": service.class_school_analysis_pdf(), "routine": service.routine_pdf(),
+                    "staff": service.staff_register_pdf(),
+                }[kind]
+            os.startfile(Path(path), "print" if print_now else "open")
+        except Exception as exc:
+            messagebox.showerror("Report Error", str(exc), parent=self)

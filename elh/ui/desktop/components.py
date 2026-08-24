@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import tkinter as tk
 import nepali_datetime as nepali
+from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Iterable
 
@@ -173,6 +175,21 @@ class CrudPage(BasePage):
             )
         columns_button.configure(menu=columns_menu)
         columns_button.pack(side="left", padx=(0, 6))
+
+        def print_current_table():
+            displayed = list(tree.get_children(""))
+            visible_keys = list(tree.cget("displaycolumns"))
+            if visible_keys in (("#all",), ["#all"], "#all"):
+                visible_keys = [key for key, _heading, _width in columns]
+            visible_headers = [headings[key] for key in visible_keys]
+            rows = [[tree.set(item, key) for key in visible_keys] for item in displayed]
+            title = getattr(self, "print_title", self.__class__.__name__.removesuffix("Page").replace("_", " ").upper())
+            try:
+                path = self.app.services.reports.current_table_pdf(title, visible_headers, rows)
+                os.startfile(Path(path), "print")
+            except Exception as exc:
+                self.show_error(exc)
+        ttk.Button(search_row, text="▣ Print current table", command=print_current_table).pack(side="left", padx=(0, 8))
         count_var = tk.StringVar(value="0 records")
         ttk.Label(search_row, textvariable=count_var, style="Hint.TLabel").pack(side="right")
         tree = ttk.Treeview(

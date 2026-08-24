@@ -143,6 +143,19 @@ class ReportsService:
         data = [["Class / Level", r["label"], r["total"]] for r in classes] + [["School", r["label"], r["total"]] for r in schools]
         return self._build(output or self._path("student_class_school_analysis.pdf"), "STUDENT COUNT ANALYSIS", "Current", "Current", ["Group","Class / School","Students"], data, ["","TOTAL STUDENTS",str(sum(int(r["total"]) for r in classes))])
 
+    def current_table_pdf(self, title: str, headers: list[str], rows: list[list], output: Path | None = None) -> Path:
+        """Print exactly the rows and columns currently visible in an application table."""
+        if not headers:
+            raise ValueError("There are no visible columns to print.")
+        if not rows:
+            raise ValueError("There are no displayed rows to print.")
+        safe_name = "".join(character if character.isalnum() else "_" for character in title.lower()).strip("_")
+        return self._build(
+            output or self._path(f"current_table_{safe_name}.pdf"), title,
+            "Current filtered and sorted view", "Current",
+            headers, rows, ["TOTAL DISPLAYED ROWS", str(len(rows)), *[""] * (len(headers) - 2)],
+        )
+
     def routine_pdf(
         self, class_level_id: int | None = None, output: Path | None = None,
         routine_plan_id: int | None = None,
