@@ -49,6 +49,7 @@ class ReportsService:
         self,
         class_level_id: int | None = None,
         school_id: int | None = None,
+        status: str = "All",
         output: Path | None = None,
     ) -> Path:
         """Build a current student register, optionally for one class or school."""
@@ -60,6 +61,9 @@ class ReportsService:
         if school_id:
             where.append("s.school_id=?")
             params.append(int(school_id))
+        if status in {"Active", "Inactive"}:
+            where.append("s.status=?")
+            params.append(status)
         condition = " WHERE " + " AND ".join(where) if where else ""
         rows = self.db.query(
             "SELECT s.id,s.student_name,COALESCE(cl.level_name,s.class_name,'') class_name,"
@@ -78,7 +82,9 @@ class ReportsService:
         if school_id:
             row = self.db.query_one("SELECT school_name FROM schools WHERE id=?", (school_id,))
             scope.append(f"School: {row['school_name'] if row else school_id}")
-        suffix = "_".join(str(value) for value in (class_level_id, school_id) if value) or "all"
+        if status in {"Active", "Inactive"}:
+            scope.append(f"Status: {status}")
+        suffix = "_".join(str(value) for value in (class_level_id, school_id, status.lower() if status != "All" else None) if value) or "all"
         return self._build(
             output or self._path(f"student_register_{suffix}.pdf"),
             "STUDENT REGISTER" + (" — " + " | ".join(scope) if scope else ""),
@@ -86,6 +92,50 @@ class ReportsService:
             ["ID","Student","Class","School","Contact","Joining","Status"], data,
             ["","TOTAL STUDENTS",str(len(rows)),"","","",""]
         )
+
+    def enrollment_register_pdf(self, status: str = "All", output: Path | None = None) -> Path:
+        """Build a current enrollment register, optionally limited by its status."""
+        where, params = "", ()
+        if status in {"Active", "Inactive", "Completed", "Cancelled"}:
+            where, params = " WHERE e.status=?", (status,)
+        rows = self.db.query(
+            "SELECT e.id,s.student_name,COALESCE(cl.level_name,s.class_name,'') class_name,"
+            "COALESCE(sc.school_name,'') school_name,c.course_name,e.start_date,e.end_date,"
+            "e.monthly_fee,e.status "
+            "FROM enrollments e JOIN students s ON s.id=e.student_id "
+            "JOIN courses c ON c.id=e.course_id "
+            "LEFT JOIN class_levels cl ON cl.id=s.class_level_id "
+            "LEFT JOIN schools sc ON sc.id=s.school_id" + where +
+            " ORDER BY s.student_name,e.start_date,e.id",
+            params,
+        )
+        data = [[r["id"],r["student_name"],r["class_name"],r["school_name"],r["course_name"],r["start_date"],r["end_date"] or "",self._money(r["monthly_fee"]),r["status"]] for r in rows]
+        title = "ENROLLMENT REGISTER" + (f" — {status}" if status != "All" else "")
+        return self._build(
+            output or self._path(f"enrollment_register_{status.lower()}.pdf"), title,
+            f"Status: {status}", "Current",
+            ["ID","Student","Class","School","Course","Start","End","Monthly Fee","Status"], data,
+            ["","TOTAL ENROLLMENTS",str(len(rows)),"","","","","",""]
+        )
+
+    def print_absent_students_pos(self, students: list[dict]) -> None:
+        """Print a short attendance follow-up list without financial columns."""
+        if not self.printing:
+            raise ValueError("POS printing service is unavailable.")
+        if not students:
+            raise ValueError("There are no absent students to print.")
+        lines = [
+            ReceiptLine(
+                f"{index}. {row['student_name']} ({row.get('class_name') or 'No class'})",
+                Decimal("0"),
+            )
+            for index, row in enumerate(students, start=1)
+        ]
+        self.printing.print_receipt(Receipt(
+            "ABSENT STUDENTS TODAY", f"ABS-{today_iso().replace('/', '-')}", today_iso(),
+            lines=lines, footer=f"Total absent: {len(students)} | Attendance follow-up",
+            show_amounts=False,
+        ))
 
     def class_school_analysis_pdf(self, output: Path | None = None) -> Path:
         classes = self.db.query("SELECT COALESCE(cl.level_name,s.class_name,'Not assigned') label,COUNT(*) total FROM students s LEFT JOIN class_levels cl ON cl.id=s.class_level_id GROUP BY COALESCE(cl.level_name,s.class_name,'Not assigned') ORDER BY label")

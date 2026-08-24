@@ -34,6 +34,7 @@ class ReportsPage(BasePage):
         filter_card.pack(fill="x",pady=(0,12))
         self.report_class=tk.StringVar(value="All classes")
         self.report_school=tk.StringVar(value="All schools")
+        self.report_status=tk.StringVar(value="All")
         classes=self.db.query("SELECT id,level_name FROM class_levels WHERE status='Active' ORDER BY level_name")
         schools=self.db.query("SELECT id,school_name FROM schools WHERE status='Active' ORDER BY school_name")
         self.report_class_map={"All classes":None,**{str(row["level_name"]):int(row["id"]) for row in classes}}
@@ -41,10 +42,11 @@ class ReportsPage(BasePage):
         fb=FormBuilder(filter_card)
         fb.combo("Class / Level",self.report_class,self.report_class_map,searchable=True,width=42)
         fb.combo("School",self.report_school,self.report_school_map,searchable=True,width=42)
-        actions=ttk.Frame(filter_card);actions.grid(row=0,column=2,rowspan=2,padx=(14,0),sticky="ns")
+        fb.combo("Student Status",self.report_status,["All","Active","Inactive"],width=42)
+        actions=ttk.Frame(filter_card);actions.grid(row=0,column=2,rowspan=3,padx=(14,0),sticky="ns")
         ttk.Button(actions,text="Open Filtered Register PDF",style="Accent.TButton",command=lambda:self.run("filtered_students",False)).pack(fill="x",pady=(0,6))
         ttk.Button(actions,text="Print Filtered Register",command=lambda:self.run("filtered_students",True)).pack(fill="x")
-        self.actions(parent,"Other academic reports.",[("Open Student Register PDF",lambda:self.run("students",False)),("Print Student Register",lambda:self.run("students",True)),("Open Class & School Analysis PDF",lambda:self.run("analysis",False)),("Print Class & School Analysis",lambda:self.run("analysis",True)),("Open All Class Routines PDF",lambda:self.run("routine",False)),("Print All Class Routines",lambda:self.run("routine",True))])
+        self.actions(parent,"Other academic reports.",[("Open All Student Register PDF",lambda:self.run("students",False)),("Print All Student Register",lambda:self.run("students",True)),("Open Enrollment Register PDF",lambda:self.run("enrollments",False)),("Print Enrollment Register",lambda:self.run("enrollments",True)),("Open Class & School Analysis PDF",lambda:self.run("analysis",False)),("Print Class & School Analysis",lambda:self.run("analysis",True)),("Open All Class Routines PDF",lambda:self.run("routine",False)),("Print All Class Routines",lambda:self.run("routine",True))])
 
     def run(self,kind,print_now):
         try:
@@ -58,7 +60,9 @@ class ReportsPage(BasePage):
             elif kind == "filtered_students":
                 class_id=self.report_class_map.get(self.report_class.get())
                 school_id=self.report_school_map.get(self.report_school.get())
-                path=service.student_register_pdf(class_id,school_id)
+                path=service.student_register_pdf(class_id,school_id,status=self.report_status.get())
+            elif kind == "enrollments":
+                path=service.enrollment_register_pdf(self.report_status.get())
             else:
                 path=(service.paid_transactions_pdf(start,end) if kind=="paid" else service.ledger_pdf(start,end) if kind=="ledger" else service.student_register_pdf() if kind=="students" else service.class_school_analysis_pdf() if kind=="analysis" else service.routine_pdf() if kind=="routine" else service.staff_register_pdf())
             os.startfile(Path(path),"print" if print_now else "open")

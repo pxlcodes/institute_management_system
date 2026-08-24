@@ -18,6 +18,7 @@ class Receipt:
     customer_name: str = ""
     lines: list[ReceiptLine] = field(default_factory=list)
     footer: str = "Thank you"
+    show_amounts: bool = True
 
     @property
     def total(self) -> Decimal:

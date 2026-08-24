@@ -21,10 +21,15 @@ class NetworkEscPosPrinter:
             lines.append(f"Name: {receipt.customer_name}")
         lines.append("-" * self.width)
         for item in receipt.lines:
-            amount = f"{item.amount:.2f}"
-            lines.append(f"{item.description[:self.width-len(amount)-1]:<{self.width-len(amount)}}{amount}")
-        lines.extend(["-" * self.width, f"TOTAL {receipt.total:.2f}".rjust(self.width),
-                      "", receipt.footer.center(self.width), "", "", "", "", "", ""])
+            if receipt.show_amounts:
+                amount = f"{item.amount:.2f}"
+                lines.append(f"{item.description[:self.width-len(amount)-1]:<{self.width-len(amount)}}{amount}")
+            else:
+                lines.append(item.description[:self.width])
+        lines.append("-" * self.width)
+        if receipt.show_amounts:
+            lines.append(f"TOTAL {receipt.total:.2f}".rjust(self.width))
+        lines.extend(["", receipt.footer.center(self.width), "", "", "", "", "", ""])
         return b"\x1b@" + "\n".join(lines).encode("utf-8", errors="replace") + b"\x1dV\x00"
 
     def print_receipt(self, receipt: Receipt) -> None:

@@ -108,6 +108,9 @@ class DashboardPage(BasePage):
         ttk.Button(
             absent_actions, text="Bulk SMS Selected", command=self.send_bulk_absence_sms,
         ).pack(side="left", padx=(6, 0))
+        ttk.Button(
+            absent_actions, text="Print Absent List (POS)", command=self.print_absent_students_pos,
+        ).pack(side="left", padx=(6, 0))
         ttk.Label(
             absent_actions, text="Use Ctrl/Shift to select several students. Double-click sends to one student.",
             style="Hint.TLabel",
@@ -378,6 +381,18 @@ class DashboardPage(BasePage):
                 message += f"\n\nSkipped {len(skipped)} student(s) with contact or delivery-record issues."
             message += "\n\nCheck SMS & Notifications for delivery results."
             messagebox.showinfo("Bulk Absence SMS", message, parent=self)
+        except Exception as exc:
+            self.show_error(exc)
+
+    def print_absent_students_pos(self) -> None:
+        students = list(self.absent_students_by_student.values())
+        try:
+            self.app.services.reports.print_absent_students_pos(students)
+            messagebox.showinfo(
+                "Absent List Printed",
+                f"Sent {len(students)} absent student(s) to the configured POS printer.",
+                parent=self,
+            )
         except Exception as exc:
             self.show_error(exc)
 
