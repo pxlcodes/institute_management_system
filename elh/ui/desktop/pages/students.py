@@ -97,15 +97,23 @@ class StudentsPage(CrudPage, ImportTemplateMixin):
                 ("date", "Joining Date", 100),
                 ("photo", "Photo", 65),
                 ("attendance", "Attendance User", 180),
+                ("enrolled", "Active Enrollment", 115),
                 ("status", "Status", 80),
             ],
         )
+        self.tree.configure(selectmode="extended")
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
         self.tree.bind("<Double-1>", self.open_editor)
         ttk.Button(
             self.page_toolbar,
             text="Send SMS...",
             command=self.open_sms_dialog,
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            self.page_toolbar,
+            text="Assign Enrollment...",
+            style="Accent.TButton",
+            command=self.assign_selected_enrollment,
         ).pack(side="left", padx=4)
         self.add_toolbar_menu("More actions", [
             ("Import CSV…", self.import_csv),
@@ -651,7 +659,11 @@ class StudentsPage(CrudPage, ImportTemplateMixin):
             """
             SELECT s.id,s.student_name,s.class_name,s.contact,s.gender,s.parent_name,
                    s.joining_date,s.status,s.photo_mime_type,sc.school_name,
-                   m.device_user_id,u.device_name
+                   m.device_user_id,u.device_name,
+                   CASE WHEN EXISTS (
+                     SELECT 1 FROM enrollments e
+                     WHERE e.student_id=s.id AND e.status='Active'
+                   ) THEN 'Yes' ELSE 'No' END enrolled
             FROM students s
             LEFT JOIN schools sc ON sc.id=s.school_id
             LEFT JOIN (
@@ -681,9 +693,22 @@ class StudentsPage(CrudPage, ImportTemplateMixin):
                     row["joining_date"],
                     "Yes" if row["photo_mime_type"] else "",
                     attendance_user,
+                    row["enrolled"],
                     row["status"],
                 ),
             )
+
+    def assign_selected_enrollment(self) -> None:
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showinfo("Assign Enrollment", "Select one or more students first.", parent=self)
+            return
+        student_ids = [int(self.tree.item(item, "values")[0]) for item in selected]
+        enrollments_page = self.app.pages.get("Enrollments")
+        if not enrollments_page:
+            self.show_error(ValueError("Enrollment module is unavailable for this user."))
+            return
+        enrollments_page.open_selected_students_enrollment(student_ids)
 
     def export_csv(self) -> None:
         path = filedialog.asksaveasfilename(

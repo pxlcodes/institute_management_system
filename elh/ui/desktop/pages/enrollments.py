@@ -347,6 +347,79 @@ class EnrollmentsPage(CrudPage,ImportTemplateMixin):
         dialog.geometry(f"{width}x{height}")
         dialog.grab_set()
 
+    def open_selected_students_enrollment(self, student_ids: list[int]) -> None:
+        """Assign one course to selected Student-table records using saved profile data."""
+        ids = list(dict.fromkeys(int(value) for value in student_ids))
+        if not ids:
+            return
+        placeholders = ",".join("?" for _ in ids)
+        students = self.db.query(
+            "SELECT id,student_name,class_name,joining_date FROM students WHERE id IN (" + placeholders + ") ORDER BY student_name",
+            tuple(ids),
+        )
+        courses = self.db.query(
+            "SELECT id,course_name,category,default_fee FROM courses WHERE status='Active' ORDER BY category,course_name"
+        )
+        if not courses:
+            self.show_error(ValueError("Create an active course before assigning enrollments."))
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("Assign Enrollment to Selected Students")
+        dialog.transient(self.winfo_toplevel())
+        dialog.minsize(720, 480)
+        shell = ttk.Frame(dialog, padding=14, style="Form.TFrame")
+        shell.pack(fill="both", expand=True)
+        ttk.Label(shell, text="Assign Enrollment", style="SubTitle.TLabel").pack(anchor="w")
+        ttk.Label(shell, text="Uses every student's saved Joining Date and Class/Level. Students already active in the selected course are skipped.", style="Hint.TLabel", wraplength=680).pack(anchor="w", pady=(0, 10))
+        course_map = {f"{row['course_name']} [{row['category']}] (ID: {row['id']})": row for row in courses}
+        values = {"course": tk.StringVar(), "end": tk.StringVar(), "monthly": tk.StringVar(value="0"), "admission": tk.StringVar(value="0"), "discount": tk.StringVar(value="0"), "remarks": tk.StringVar()}
+        details = ttk.Frame(shell, style="Form.TFrame"); details.pack(fill="x")
+        fb = FormBuilder(details)
+        course_combo = fb.combo("Course *", values["course"], list(course_map), searchable=True, width=52)
+        fb.entry("End Date", values["end"], width=38); fb.entry("Monthly Fee", values["monthly"], width=38)
+        fb.entry("Admission Fee", values["admission"], width=38); fb.entry("Discount", values["discount"], width=38); fb.entry("Remarks", values["remarks"], width=38)
+        details.columnconfigure(1, weight=1)
+        def set_course_fee(_event=None):
+            course = course_map.get(values["course"].get())
+            if course:
+                values["monthly"].set(str(course["default_fee"] or 0))
+        course_combo.bind("<<ComboboxSelected>>", set_course_fee, add="+")
+        ttk.Label(shell, text=f"Selected Students ({len(students)})", style="SubTitle.TLabel").pack(anchor="w", pady=(12, 5))
+        table = ttk.Frame(shell); table.pack(fill="both", expand=True)
+        tree = ttk.Treeview(table, columns=("id", "student", "class", "joining"), show="headings", selectmode="extended")
+        for key, heading, width in (("id", "ID", 60), ("student", "Student", 290), ("class", "Class", 120), ("joining", "Joining Date", 125)):
+            tree.heading(key, text=heading); tree.column(key, width=width, anchor="w")
+        bar = ttk.Scrollbar(table, orient="vertical", command=tree.yview); tree.configure(yscrollcommand=bar.set)
+        tree.pack(side="left", fill="both", expand=True); bar.pack(side="right", fill="y")
+        for student in students:
+            tree.insert("", "end", iid=f"student-{student['id']}", values=(student["id"], student["student_name"], student["class_name"] or "", student["joining_date"]))
+        tree.selection_set(tree.get_children())
+        actions = ttk.Frame(shell, style="Form.TFrame"); actions.pack(fill="x", pady=(10, 0))
+        ttk.Button(actions, text="Select All", command=lambda: tree.selection_set(tree.get_children())).pack(side="left")
+        ttk.Button(actions, text="Cancel", command=dialog.destroy).pack(side="right", padx=3)
+        def save_selected():
+            try:
+                course = course_map.get(values["course"].get())
+                if not course:
+                    raise ValueError("Select a course.")
+                chosen = [int(tree.item(item, "values")[0]) for item in tree.selection()]
+                if not chosen:
+                    raise ValueError("Select at least one student.")
+                created, skipped = self.app.services.enrollments.create_from_student_profiles(
+                    chosen, int(course["id"]), end_date=validate_date(values["end"].get(), "End date", True),
+                    monthly_fee=parse_amount(values["monthly"].get() or "0", "Monthly fee"),
+                    admission_fee=parse_amount(values["admission"].get() or "0", "Admission fee"),
+                    discount=parse_amount(values["discount"].get() or "0", "Discount"), remarks=values["remarks"].get().strip(),
+                )
+                dialog.destroy(); self.app.refresh_all()
+                messagebox.showinfo("Enrollment Complete", f"Created: {len(created)}\nAlready active in this course: {len(skipped)}", parent=self)
+            except Exception as exc:
+                messagebox.showerror("Enrollment", str(exc), parent=dialog)
+        ttk.Button(actions, text="Create Selected Enrollments", style="Accent.TButton", command=save_selected).pack(side="right")
+        dialog.update_idletasks()
+        dialog.geometry(f"{max(760, dialog.winfo_reqwidth() + 20)}x{max(520, dialog.winfo_reqheight() + 20)}")
+        dialog.grab_set()
+
     def export_csv(self):
         path=filedialog.asksaveasfilename(parent=self,title="Export Enrollments",defaultextension=".csv",filetypes=[("CSV files","*.csv")])
         if not path:return

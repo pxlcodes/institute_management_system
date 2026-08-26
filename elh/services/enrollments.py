@@ -123,7 +123,7 @@ class EnrollmentService:
             ))
         return created, skipped
 
-    def create_for_attendance_students(
+    def create_from_student_profiles(
         self,
         student_ids: list[int],
         course_id: int,
@@ -134,7 +134,7 @@ class EnrollmentService:
         discount,
         remarks: str = "",
     ) -> tuple[list[int], list[int]]:
-        """Enroll present students using each student's saved class and joining date."""
+        """Enroll students using each student's saved class and joining date."""
         created: list[int] = []
         skipped: list[int] = []
         for student_id in dict.fromkeys(int(value) for value in student_ids):
@@ -163,6 +163,16 @@ class EnrollmentService:
                 remarks,
             ))
         return created, skipped
+
+    def create_for_attendance_students(
+        self, student_ids: list[int], course_id: int, *, end_date: str, monthly_fee,
+        admission_fee, discount, remarks: str = "",
+    ) -> tuple[list[int], list[int]]:
+        """Backward-compatible attendance workflow using student profile details."""
+        return self.create_from_student_profiles(
+            student_ids, course_id, end_date=end_date, monthly_fee=monthly_fee,
+            admission_fee=admission_fee, discount=discount, remarks=remarks,
+        )
 
     def delete(self, enrollment_id: int) -> None:
         self.db.execute("DELETE FROM enrollments WHERE id=?", (enrollment_id,))
