@@ -156,7 +156,10 @@ class ReportsService:
         data = [["Class / Level", r["label"], r["total"]] for r in classes] + [["School", r["label"], r["total"]] for r in schools]
         return self._build(output or self._path("student_class_school_analysis.pdf"), "STUDENT COUNT ANALYSIS", "Current", "Current", ["Group","Class / School","Students"], data, ["","TOTAL STUDENTS",str(sum(int(r["total"]) for r in classes))])
 
-    def current_table_pdf(self, title: str, headers: list[str], rows: list[list], output: Path | None = None) -> Path:
+    def current_table_pdf(
+        self, title: str, headers: list[str], rows: list[list],
+        column_widths: list[int] | None = None, output: Path | None = None,
+    ) -> Path:
         """Print exactly the rows and columns currently visible in an application table."""
         if not headers:
             raise ValueError("There are no visible columns to print.")
@@ -166,7 +169,8 @@ class ReportsService:
         return self._build(
             output or self._path(f"current_table_{safe_name}.pdf"), title,
             "Current filtered and sorted view", "Current",
-            headers, rows, ["TOTAL DISPLAYED ROWS", str(len(rows)), *[""] * (len(headers) - 2)],
+            headers, rows, [f"Total displayed rows: {len(rows)}", *[""] * (len(headers) - 1)],
+            column_widths=column_widths,
         )
 
     def routine_pdf(
@@ -395,7 +399,7 @@ class ReportsService:
         path=ROOT_DIR/"output"/"pdf"/name;path.parent.mkdir(parents=True,exist_ok=True);return path
     def _money(self,value):return f"{float(value or 0):,.2f}"
 
-    def _build(self,output,title,start_date,end_date,headers,rows,total_row):
+    def _build(self,output,title,start_date,end_date,headers,rows,total_row,column_widths=None):
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import A4,landscape
         from reportlab.lib.styles import ParagraphStyle,getSampleStyleSheet
@@ -413,7 +417,19 @@ class ReportsService:
         details += [v for v in (profile.get("address"),profile.get("phone"),profile.get("email"),profile.get("website")) if v]
         story=[Paragraph(profile.get("company_name") or self.app_title,heading),Paragraph(" | ".join(details),sub),Spacer(1,4*mm),Paragraph(title,ParagraphStyle("Report",parent=styles["Heading2"],alignment=1,textColor=colors.HexColor("#008F7A"))),Paragraph(f"Period: {start_date} to {end_date} (BS)  |  Printed: {today_iso()} (BS)",sub),Spacer(1,5*mm)]
         table_data=[headers,*rows,total_row]
-        if len(headers) == 7:
+        if column_widths:
+            total_width = sum(max(1, int(width)) for width in column_widths)
+            widths = [277 * max(1, int(width)) / total_width for width in column_widths]
+            from xml.sax.saxutils import escape
+            cell_style = ParagraphStyle("TableCell", parent=styles["BodyText"], fontSize=6.8, leading=8.1)
+            header_style = ParagraphStyle("TableHeader", parent=cell_style, textColor=colors.white, fontName="Helvetica-Bold", alignment=1)
+            total_style = ParagraphStyle("TableTotal", parent=cell_style, fontName="Helvetica-Bold")
+            table_data = [
+                [Paragraph(escape(str(value)), header_style) for value in headers],
+                *[[Paragraph(escape(str(value or "")), cell_style) for value in row] for row in rows],
+                [Paragraph(escape(str(value or "")), total_style) for value in total_row],
+            ]
+        elif len(headers) == 7:
             widths=[25,42,24,27,37,82,35] if "LEDGER" in title else [25,42,75,27,27,48,32]
         else:
             widths=[277 / len(headers)] * len(headers)

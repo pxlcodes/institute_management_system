@@ -182,9 +182,10 @@ class CrudPage(BasePage):
                 visible_keys = [key for key, _heading, _width in columns]
             visible_headers = [headings[key] for key in visible_keys]
             rows = [[tree.set(item, key) for key in visible_keys] for item in displayed]
+            column_widths = [next(width for column_key, _heading, width in columns if column_key == key) for key in visible_keys]
             title = getattr(self, "print_title", self.__class__.__name__.removesuffix("Page").replace("_", " ").upper())
             try:
-                path = self.app.services.reports.current_table_pdf(title, visible_headers, rows)
+                path = self.app.services.reports.current_table_pdf(title, visible_headers, rows, column_widths)
                 if not open_or_print_pdf(path, print_now=True):
                     messagebox.showinfo(
                         "Table Report Opened",

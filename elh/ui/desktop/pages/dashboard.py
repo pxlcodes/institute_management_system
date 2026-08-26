@@ -69,6 +69,7 @@ class DashboardPage(BasePage):
             ("student", "Student", 220), ("class", "Class", 90), ("last", "Last Attendance", 155),
             ("consecutive", "No-Punch Days", 110), ("monthly", "Missing This Month", 130), ("review", "Review Status", 130), ("reason", "Review Reason", 300),
         ])
+        self.alert_tree.print_title = "ATTENDANCE FOLLOW-UP ALERTS"
         self.alert_tree.configure(height=8)
         self.alert_tree.bind("<Double-1>", self.review_selected_alert)
         alert_actions = ttk.Frame(attendance_tab, style="Toolbar.TFrame", padding=(8, 4)); alert_actions.pack(fill="x")
@@ -91,6 +92,7 @@ class DashboardPage(BasePage):
                 ("last", "Last Punch", 170),
             ],
         )
+        self.present_tree.print_title = "STUDENTS PRESENT TODAY"
         self.present_tree.configure(height=9)
 
         ttk.Label(absent_tab, text="Students Absent Today", style="SubTitle.TLabel").pack(
@@ -132,6 +134,7 @@ class DashboardPage(BasePage):
                 ("device", "Device", 110),
             ],
         )
+        self.absent_tree.print_title = "STUDENTS ABSENT TODAY"
         self.absent_tree.configure(height=8, selectmode="extended")
         self.absent_tree.bind("<Double-1>", self.send_selected_absence_sms)
 
@@ -145,6 +148,7 @@ class DashboardPage(BasePage):
             ("name", "Student", 220), ("class", "Class", 90), ("contact", "Contact", 125),
             ("punches", "Punches", 90), ("first", "First Punch", 160), ("last", "Last Punch", 160),
         ])
+        self.not_enrolled_tree.print_title = "STUDENTS PUNCHED BUT NOT ENROLLED"
         self.not_enrolled_tree.configure(height=8, selectmode="extended")
 
         ttk.Label(accounts_tab, text="Account Balances", style="SubTitle.TLabel").pack(
@@ -162,6 +166,7 @@ class DashboardPage(BasePage):
                 ("status", "Status", 90),
             ],
         )
+        self.tree.print_title = "ACCOUNT BALANCES"
 
     def refresh(self) -> None:
         today = today_iso()
