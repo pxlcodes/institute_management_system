@@ -183,6 +183,26 @@ Environment settings take effect after restart. Runtime settings take effect as 
 
 Web handlers should import `elh.config`, `elh.core.validation`, `elh.core.settings`, and `elh.core.health` directly. Those modules have no dependency on Tkinter. The desktop file is a presentation adapter; keep future HTTP routing and serialization in a separate adapter rather than importing UI page classes.
 
+## Browser application (initial web release)
+
+The repository now also contains a lightweight browser application that uses the same MySQL
+database, login accounts, permissions, validation, and service layer as the desktop application.
+It includes sign-in, dashboard figures, student search/creation, course enrollment, and an
+attendance follow-up list for students who have punched in but are not enrolled. It does not
+move or duplicate existing data.
+
+Install its additional server packages once, then start it:
+
+```powershell
+python -m pip install -r requirements-web.txt
+.\run_web.ps1
+```
+
+Open `http://localhost:8080` in a browser. For another device on the same local network, use
+this computer's IP address with port `8080`; protect that network access with a firewall or
+reverse proxy before exposing it outside the institution. The existing desktop application
+continues to work unchanged while remaining modules are migrated to the web interface.
+
 ## Database normalization and performance
 
 The canonical schema is normalized to 3NF for current master data:
