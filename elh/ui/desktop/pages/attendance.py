@@ -249,6 +249,11 @@ class AttendancePage(CrudPage):
         if not values:
             return
         log_id, device_id, person_type, person, occurred_at, event, source, serial = values
+        device_user = self.db.query_one(
+            "SELECT device_name FROM attendance_device_users WHERE device_user_id=?",
+            (str(device_id),),
+        )
+        device_name = device_user["device_name"] if device_user and device_user["device_name"] else "Not available"
         dialog = tk.Toplevel(self)
         dialog.title("Attendance Punch Details")
         dialog.transient(self.winfo_toplevel())
@@ -261,7 +266,7 @@ class AttendancePage(CrudPage):
             ttk.Label(shell, text="This device user has punches but is not linked to a Student or Staff record.", style="Hint.TLabel", wraplength=520).pack(anchor="w", pady=(0, 10))
         details = ttk.Frame(shell, style="Form.TFrame"); details.pack(fill="x")
         for row, (label, value) in enumerate((
-            ("Log ID", log_id), ("Device User ID", device_id), ("Linked Type", person_type),
+            ("Log ID", log_id), ("Device User ID", device_id), ("Device Username", device_name), ("Linked Type", person_type),
             ("Student / Staff", person or "Not mapped"), ("Attendance Time", occurred_at),
             ("Event", event), ("Source / Reason", source), ("Device Serial", serial),
         )):
