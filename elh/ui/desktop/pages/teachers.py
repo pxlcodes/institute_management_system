@@ -69,10 +69,11 @@ class TeachersPage(CrudPage):
 
         buttons = ttk.Frame(form, style="Form.TFrame")
         buttons.grid(row=0, column=2, rowspan=16, padx=15, sticky="n")
-        ttk.Button(buttons, text="Save New", command=self.save).pack(fill="x", pady=3)
-        ttk.Button(buttons, text="Update", command=self.update).pack(fill="x", pady=3)
-        ttk.Button(buttons, text="Delete", command=self.delete).pack(fill="x", pady=3)
-        ttk.Button(buttons, text="Clear", command=self.clear).pack(fill="x", pady=3)
+        self.save_staff_button = ttk.Button(
+            buttons, text="Save Staff", style="Accent.TButton", command=self.save_or_update
+        )
+        self.save_staff_button.pack(fill="x", pady=3)
+        ttk.Button(buttons, text="Cancel", command=self.hide_form_dialog).pack(fill="x", pady=3)
 
         area = ttk.Frame(self)
         area.pack(fill="both", expand=True)
@@ -99,6 +100,17 @@ class TeachersPage(CrudPage):
             text="Bulk Edit Selected",
             command=self.bulk_edit_selected,
         ).pack(side="left", padx=4)
+        self.add_toolbar_menu("More actions", [("Delete selected staff", self.delete)])
+
+    def show_new_form(self):
+        self.save_staff_button.configure(text="Save Staff")
+        super().show_new_form()
+
+    def save_or_update(self):
+        if self.selected_id:
+            self.update()
+        else:
+            self.save()
 
     def values(self):
         if not self.vars["name"].get().strip():
@@ -140,6 +152,7 @@ class TeachersPage(CrudPage):
                 "teacher", teacher_id, device_user_id
             )
             self.app.services.staff_finance.sync_account(teacher_id)
+            self.hide_form_dialog()
             self.clear()
             self.app.refresh_all()
         except Exception as exc:
@@ -165,6 +178,7 @@ class TeachersPage(CrudPage):
                 "teacher", self.selected_id, device_user_id
             )
             self.app.services.staff_finance.sync_account(self.selected_id)
+            self.hide_form_dialog()
             self.clear()
             self.app.refresh_all()
         except Exception as exc:
@@ -232,6 +246,7 @@ class TeachersPage(CrudPage):
             )
             return "break"
         self.on_select()
+        self.save_staff_button.configure(text="Save Changes")
         self.show_form_dialog()
         return "break"
 
