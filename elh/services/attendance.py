@@ -417,3 +417,6 @@ class AttendanceService:
     def students_with_attendance(self) -> list[dict]:
         """Return active students with at least one imported attendance punch."""
         return self.repository.students_with_attendance()
+
+    def students_punched_not_enrolled(self, start_at: str | None = None, end_at: str | None = None) -> list[dict]:
+        return self.repository.students_punched_not_enrolled(start_at, end_at)

@@ -55,10 +55,12 @@ class DashboardPage(BasePage):
         attendance_tab = ttk.Frame(dashboard_tabs, padding=4)
         present_tab = ttk.Frame(dashboard_tabs, padding=4)
         absent_tab = ttk.Frame(dashboard_tabs, padding=4)
+        not_enrolled_tab = ttk.Frame(dashboard_tabs, padding=4)
         accounts_tab = ttk.Frame(dashboard_tabs, padding=4)
         dashboard_tabs.add(attendance_tab, text="Attendance & Follow-up")
         dashboard_tabs.add(present_tab, text="Students Present Today")
         dashboard_tabs.add(absent_tab, text="Students Absent Today")
+        dashboard_tabs.add(not_enrolled_tab, text="Punched, Not Enrolled")
         dashboard_tabs.add(accounts_tab, text="Account Balances")
 
         ttk.Label(attendance_tab, text="Attendance Follow-up Alerts", style="SubTitle.TLabel").pack(anchor="w", pady=(8, 7), padx=4)
@@ -128,6 +130,18 @@ class DashboardPage(BasePage):
         )
         self.absent_tree.configure(height=8, selectmode="extended")
         self.absent_tree.bind("<Double-1>", self.send_selected_absence_sms)
+
+        ttk.Label(not_enrolled_tab, text="Students Punched but Not Enrolled", style="SubTitle.TLabel").pack(anchor="w", pady=(8, 2), padx=4)
+        ttk.Label(not_enrolled_tab, text="Active students with one or more attendance punches and no active course enrollment.", style="Hint.TLabel").pack(anchor="w", pady=(0, 7), padx=4)
+        not_enrolled_actions = ttk.Frame(not_enrolled_tab, style="Toolbar.TFrame", padding=(8, 4)); not_enrolled_actions.pack(fill="x", pady=(0, 6))
+        ttk.Button(not_enrolled_actions, text="Assign Enrollment...", style="Accent.TButton", command=self.assign_punched_students).pack(side="left")
+        ttk.Label(not_enrolled_actions, text="Select one or more students, then assign their course.", style="Hint.TLabel").pack(side="left", padx=10)
+        not_enrolled_area = ttk.Frame(not_enrolled_tab); not_enrolled_area.pack(fill="x")
+        self.not_enrolled_tree = CrudPage.make_tree(self, not_enrolled_area, [
+            ("name", "Student", 220), ("class", "Class", 90), ("contact", "Contact", 125),
+            ("punches", "Punches", 90), ("first", "First Punch", 160), ("last", "Last Punch", 160),
+        ])
+        self.not_enrolled_tree.configure(height=8, selectmode="extended")
 
         ttk.Label(accounts_tab, text="Account Balances", style="SubTitle.TLabel").pack(
             anchor="w", pady=(18, 7), padx=4
@@ -206,15 +220,16 @@ class DashboardPage(BasePage):
         try:
             present_students = self.app.services.attendance.students_present_today()
             absent_students = self.app.services.attendance.students_absent_today()
+            punched_not_enrolled = self.app.services.attendance.students_punched_not_enrolled()
             attendance_alerts = self.app.services.attendance.student_attendance_alerts()
             if generation != self._attendance_generation:
                 return
-            self._attendance_cache = (time.monotonic(), present_students, absent_students, attendance_alerts)
-            self._render_attendance(present_students, absent_students, attendance_alerts)
+            self._attendance_cache = (time.monotonic(), present_students, absent_students, punched_not_enrolled, attendance_alerts)
+            self._render_attendance(present_students, absent_students, punched_not_enrolled, attendance_alerts)
         except Exception:
             logging.getLogger(__name__).exception("Dashboard attendance refresh failed")
 
-    def _render_attendance(self, present_students, absent_students, attendance_alerts) -> None:
+    def _render_attendance(self, present_students, absent_students, punched_not_enrolled, attendance_alerts) -> None:
         self.attendance_alerts_by_student = {int(row["student_id"]): row for row in attendance_alerts}
         self.absent_students_by_student = {int(row["id"]): row for row in absent_students}
         self.cards["student_present"].config(text=str(len(present_students)))
@@ -243,6 +258,13 @@ class DashboardPage(BasePage):
                     row["device_status"],
                 ),
             )
+
+        CrudPage.clear_tree(self.not_enrolled_tree)
+        for row in punched_not_enrolled:
+            self.not_enrolled_tree.insert("", "end", iid=f"not-enrolled-{row['id']}", values=(
+                row["student_name"], row["class_name"] or "", row["contact"] or "", row["punches"],
+                self._attendance_date(row["first_seen"]), self._attendance_date(row["last_seen"]),
+            ))
 
         CrudPage.clear_tree(self.alert_tree)
         for row in attendance_alerts:
@@ -395,6 +417,18 @@ class DashboardPage(BasePage):
             )
         except Exception as exc:
             self.show_error(exc)
+
+    def assign_punched_students(self) -> None:
+        selected = self.not_enrolled_tree.selection()
+        if not selected:
+            messagebox.showinfo("Assign Enrollment", "Select one or more students first.", parent=self)
+            return
+        student_ids = [int(str(item).removeprefix("not-enrolled-")) for item in selected]
+        page = self.app.pages.get("Enrollments")
+        if not page:
+            self.show_error(ValueError("Enrollment module is unavailable for this user."))
+            return
+        page.open_selected_students_enrollment(student_ids)
 
 
 # ---------------------------------------------------------------------------

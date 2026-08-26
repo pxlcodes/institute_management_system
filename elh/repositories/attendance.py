@@ -335,3 +335,21 @@ class AttendanceRepository:
             ORDER BY s.student_name
             """
         )
+
+    def students_punched_not_enrolled(self, start_at: str | None = None, end_at: str | None = None):
+        """Students with attendance activity but no active course enrollment."""
+        where = "l.person_type='student' AND s.status='Active'"
+        params: tuple = ()
+        if start_at and end_at:
+            where += " AND l.occurred_at BETWEEN ? AND ?"
+            params = (start_at, end_at)
+        return self.db.query(
+            "SELECT s.id,s.student_name,s.class_name,s.contact,COUNT(l.id) punches,"
+            "MIN(l.occurred_at) first_seen,MAX(l.occurred_at) last_seen "
+            "FROM attendance_logs l JOIN students s ON s.id=l.person_id "
+            "WHERE " + where + " AND NOT EXISTS ("
+            "SELECT 1 FROM enrollments e WHERE e.student_id=s.id AND e.status='Active'"
+            ") GROUP BY s.id,s.student_name,s.class_name,s.contact "
+            "ORDER BY last_seen DESC,s.student_name",
+            params,
+        )

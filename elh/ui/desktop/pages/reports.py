@@ -45,7 +45,8 @@ class ReportsPage(BasePage):
         self._build_academic(academic)
         self._report_selector(attendance, "Attendance report", {
             "Attending Device Users Not Registered": "unregistered",
-        }, "Lists device users with punches who are not linked to an ELH student or staff record.")
+            "Students Punched but Not Enrolled": "punched_not_enrolled",
+        }, "Find device users not linked to ELH, or registered students who have attendance but no active course.")
         self._report_selector(people, "People report", {"Staff Register": "staff"},
                               "A current staff register for administrative and payroll review.")
 
@@ -96,10 +97,10 @@ class ReportsPage(BasePage):
             if end < start:
                 raise ValueError("End date cannot be earlier than start date.")
             service = self.app.services.reports
-            if kind == "unregistered":
+            if kind in {"unregistered", "punched_not_enrolled"}:
                 start_at = nepali.date(*map(int, start.split("/"))).to_datetime_date().isoformat() + " 00:00:00"
                 end_at = nepali.date(*map(int, end.split("/"))).to_datetime_date().isoformat() + " 23:59:59"
-                path = service.unregistered_attendance_pdf(start_at, end_at, start, end)
+                path = service.unregistered_attendance_pdf(start_at, end_at, start, end) if kind == "unregistered" else service.punched_not_enrolled_pdf(start_at, end_at, start, end)
             elif kind == "filtered_students":
                 path = service.student_register_pdf(self.report_class_map.get(self.report_class.get()), self.report_school_map.get(self.report_school.get()), status=self.report_status.get())
             elif kind == "enrollments":

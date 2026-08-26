@@ -45,6 +45,19 @@ class ReportsService:
         data = [[r["device_user_id"], r["device_name"], r["punches"], str(r["first_seen"]), str(r["last_seen"])] for r in rows]
         return self._build(output or self._path(f"attendance_unregistered_{start_date.replace('/','-')}_{end_date.replace('/','-')}.pdf"), "ATTENDING DEVICE USERS NOT REGISTERED IN ELH", start_date, end_date, ["Device ID", "Name on Device", "Punches", "First Punch", "Last Punch"], data, ["", "TOTAL UNREGISTERED", str(len(rows)), "", ""])
 
+    def punched_not_enrolled_pdf(self, start_at: str, end_at: str, start_date: str, end_date: str, output: Path | None = None) -> Path:
+        rows = self.db.query(
+            "SELECT s.id,s.student_name,s.class_name,s.contact,COUNT(l.id) punches,"
+            "MIN(l.occurred_at) first_seen,MAX(l.occurred_at) last_seen "
+            "FROM attendance_logs l JOIN students s ON s.id=l.person_id "
+            "WHERE l.person_type='student' AND s.status='Active' AND l.occurred_at BETWEEN ? AND ? "
+            "AND NOT EXISTS (SELECT 1 FROM enrollments e WHERE e.student_id=s.id AND e.status='Active') "
+            "GROUP BY s.id,s.student_name,s.class_name,s.contact ORDER BY last_seen DESC,s.student_name",
+            (start_at, end_at),
+        )
+        data = [[r["id"], r["student_name"], r["class_name"] or "", r["contact"] or "", r["punches"], str(r["first_seen"]), str(r["last_seen"])] for r in rows]
+        return self._build(output or self._path(f"attendance_punched_not_enrolled_{start_date.replace('/','-')}_{end_date.replace('/','-')}.pdf"), "STUDENTS PUNCHED BUT NOT ENROLLED", start_date, end_date, ["ID", "Student", "Class", "Contact", "Punches", "First Punch", "Last Punch"], data, ["", "TOTAL NOT ENROLLED", str(len(rows)), "", "", "", ""])
+
     def student_register_pdf(
         self,
         class_level_id: int | None = None,
