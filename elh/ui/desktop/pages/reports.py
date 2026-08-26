@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import os
 import tkinter as tk
-from pathlib import Path
 from tkinter import messagebox, ttk
 
 import nepali_datetime as nepali
 
 from elh.ui.desktop.components import BasePage, FormBuilder
-from elh.ui.desktop.helpers import today_iso, validate_date
+from elh.ui.desktop.helpers import open_or_print_pdf, today_iso, validate_date
 
 
 class ReportsPage(BasePage):
@@ -112,6 +110,11 @@ class ReportsPage(BasePage):
                     "analysis": service.class_school_analysis_pdf(), "routine": service.routine_pdf(),
                     "staff": service.staff_register_pdf(),
                 }[kind]
-            os.startfile(Path(path), "print" if print_now else "open")
+            if not open_or_print_pdf(path, print_now):
+                messagebox.showinfo(
+                    "Report Opened",
+                    "Windows does not have a direct PDF print action. The report was opened; use its Print command.",
+                    parent=self,
+                )
         except Exception as exc:
             messagebox.showerror("Report Error", str(exc), parent=self)

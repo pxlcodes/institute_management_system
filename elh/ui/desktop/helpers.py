@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Any
 
 from elh.config import load_config
@@ -42,3 +44,21 @@ def money(value: Any) -> str:
 
 def hash_password(password: str) -> str:
     return validation.hash_password(password)
+
+
+def open_or_print_pdf(path: str | Path, print_now: bool = False) -> bool:
+    """Open a PDF when Windows has no registered PDF ``print`` action.
+
+    Returns ``True`` when Windows accepted the direct print request, otherwise
+    opens the PDF and returns ``False`` so the page can explain the fallback.
+    """
+    pdf_path = str(Path(path))
+    if not print_now:
+        os.startfile(pdf_path, "open")
+        return True
+    try:
+        os.startfile(pdf_path, "print")
+        return True
+    except OSError:
+        os.startfile(pdf_path, "open")
+        return False

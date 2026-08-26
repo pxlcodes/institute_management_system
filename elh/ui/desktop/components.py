@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import os
 import tkinter as tk
 import nepali_datetime as nepali
-from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Iterable
+from elh.ui.desktop.helpers import open_or_print_pdf
 
 # Reusable GUI components
 # ---------------------------------------------------------------------------
@@ -186,7 +185,12 @@ class CrudPage(BasePage):
             title = getattr(self, "print_title", self.__class__.__name__.removesuffix("Page").replace("_", " ").upper())
             try:
                 path = self.app.services.reports.current_table_pdf(title, visible_headers, rows)
-                os.startfile(Path(path), "print")
+                if not open_or_print_pdf(path, print_now=True):
+                    messagebox.showinfo(
+                        "Table Report Opened",
+                        "Windows does not have a direct PDF print action. The report was opened; use its Print command.",
+                        parent=self,
+                    )
             except Exception as exc:
                 self.show_error(exc)
         ttk.Button(search_row, text="▣ Print current table", command=print_current_table).pack(side="left", padx=(0, 8))
