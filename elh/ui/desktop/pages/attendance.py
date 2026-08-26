@@ -67,9 +67,6 @@ class AttendancePage(CrudPage):
             command=self.sync_registered_names,
         )
         self.name_sync_button.pack(side="left", padx=4)
-        ttk.Button(
-            self.page_toolbar, text="Manual Attendance…", command=self.open_manual_attendance
-        ).pack(side="left", padx=4)
         ttk.Button(self.page_toolbar, text="Refresh", command=self.refresh).pack(
             side="left", padx=4
         )

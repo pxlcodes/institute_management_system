@@ -113,6 +113,10 @@ class DashboardPage(BasePage):
         ttk.Button(
             absent_actions, text="Print Absent List (POS)", command=self.print_absent_students_pos,
         ).pack(side="left", padx=(6, 0))
+        ttk.Button(
+            absent_actions, text="Mark Selected Present...", style="Accent.TButton",
+            command=self.mark_selected_absent_present,
+        ).pack(side="left", padx=(6, 0))
         ttk.Label(
             absent_actions, text="Use Ctrl/Shift to select several students. Double-click sends to one student.",
             style="Hint.TLabel",
@@ -417,6 +421,60 @@ class DashboardPage(BasePage):
             )
         except Exception as exc:
             self.show_error(exc)
+
+    def mark_selected_absent_present(self) -> None:
+        selected = self.absent_tree.selection()
+        if not selected:
+            messagebox.showinfo("Mark Present", "Select one or more absent students first.", parent=self)
+            return
+        student_ids = [int(str(item).removeprefix("absent-")) for item in selected]
+        dialog = tk.Toplevel(self)
+        dialog.title("Mark Selected Students Present")
+        dialog.transient(self.winfo_toplevel())
+        dialog.resizable(False, False)
+        shell = ttk.Frame(dialog, padding=14, style="Form.TFrame")
+        shell.pack(fill="both", expand=True)
+        ttk.Label(shell, text="Mark Students Present", style="SubTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            shell,
+            text=f"{len(student_ids)} selected student(s) will be marked present for {today_iso()}. "
+                 "Use this only when the attendance device missed a valid punch.",
+            style="Hint.TLabel", wraplength=560, justify="left",
+        ).pack(anchor="w", pady=(0, 10))
+        values = {
+            "time": tk.StringVar(value=datetime.now().strftime("%I:%M %p").lstrip("0")),
+            "reason": tk.StringVar(value="Device attendance missed"),
+        }
+        form = ttk.Frame(shell, style="Form.TFrame"); form.pack(fill="x")
+        builder = FormBuilder(form)
+        builder.entry("Attendance Time *", values["time"], width=38)
+        builder.entry("Reason *", values["reason"], width=38)
+        actions = ttk.Frame(shell, style="Form.TFrame"); actions.pack(fill="x", pady=(14, 0))
+        ttk.Button(actions, text="Cancel", command=dialog.destroy).pack(side="right")
+
+        def save_manual_present():
+            try:
+                created = 0
+                already_recorded = 0
+                for student_id in student_ids:
+                    if self.app.services.attendance.mark_manual_present(
+                        "student", student_id, today_iso(), values["time"].get(), values["reason"].get(),
+                    ):
+                        created += 1
+                    else:
+                        already_recorded += 1
+                dialog.destroy()
+                self.app.refresh_all()
+                summary = f"Marked present: {created}"
+                if already_recorded:
+                    summary += f"\nAlready recorded: {already_recorded}"
+                messagebox.showinfo("Manual Attendance", summary, parent=self)
+            except Exception as exc:
+                messagebox.showerror("Manual Attendance", str(exc), parent=dialog)
+
+        ttk.Button(actions, text="Mark Present", style="Accent.TButton", command=save_manual_present).pack(side="right", padx=(0, 6))
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.grab_set()
 
     def assign_punched_students(self) -> None:
         selected = self.not_enrolled_tree.selection()
