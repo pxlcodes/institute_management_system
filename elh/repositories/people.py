@@ -22,8 +22,8 @@ class StudentRepository:
             "s.date_of_birth,s.parent_name,s.guardian_relationship,s.joining_date," 
             "s.photo_mime_type,s.address,s.status,s.remarks,sc.school_name,NULL photo_data "
             "FROM students s LEFT JOIN schools sc ON sc.id=s.school_id "
-            "WHERE s.student_name LIKE ? OR s.contact LIKE ? OR sc.school_name LIKE ? "
-            "OR s.gender LIKE ? "
+            "WHERE s.status <> 'Archived' AND (s.student_name LIKE ? OR s.contact LIKE ? OR sc.school_name LIKE ? "
+            "OR s.gender LIKE ?) "
             "ORDER BY s.student_name", (pattern, pattern, pattern, pattern),
         )
         return [self._model(row) for row in rows]
@@ -69,6 +69,9 @@ class StudentRepository:
 
     def delete(self, student_id: int) -> None:
         self.db.execute("DELETE FROM students WHERE id=?", (student_id,))
+
+    def set_status(self, student_id: int, status: str) -> None:
+        self.db.execute("UPDATE students SET status=? WHERE id=?", (status, student_id))
 
     @staticmethod
     def _model(row) -> Student:

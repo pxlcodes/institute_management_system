@@ -125,6 +125,9 @@ class StudentsPage(CrudPage, ImportTemplateMixin):
             )),
             ("Export CSV…", self.export_csv),
             ("", None),
+            ("Archive selected student(s)", self.archive_selected),
+            ("View archived students…", self.open_archived_students),
+            ("", None),
             ("Delete selected student", self.delete),
         ])
 
@@ -394,6 +397,59 @@ class StudentsPage(CrudPage, ImportTemplateMixin):
                     else str(exc)
                 )
             )
+
+    def archive_selected(self) -> None:
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showinfo("Archive Students", "Select one or more students first.", parent=self)
+            return
+        student_ids = [int(self.tree.item(item, "values")[0]) for item in selected]
+        if not messagebox.askyesno(
+            "Archive Students",
+            f"Archive {len(student_ids)} selected student(s)?\n\nArchived students are hidden from this regular list and can be restored later.",
+            parent=self,
+        ):
+            return
+        try:
+            for student_id in student_ids:
+                self.app.services.students.archive(student_id)
+            self.clear(); self.app.refresh_all()
+            messagebox.showinfo("Archived", f"Archived {len(student_ids)} student(s).", parent=self)
+        except Exception as exc:
+            self.show_error(exc)
+
+    def open_archived_students(self) -> None:
+        dialog = tk.Toplevel(self)
+        dialog.title("Archived Students")
+        dialog.transient(self.winfo_toplevel())
+        dialog.minsize(650, 420)
+        shell = ttk.Frame(dialog, padding=14, style="Form.TFrame")
+        shell.pack(fill="both", expand=True)
+        ttk.Label(shell, text="Archived Students", style="SubTitle.TLabel").pack(anchor="w")
+        ttk.Label(shell, text="Archived records are kept for history and are not shown in the regular Students list.", style="Hint.TLabel").pack(anchor="w", pady=(0, 10))
+        table = ttk.Frame(shell); table.pack(fill="both", expand=True)
+        tree = ttk.Treeview(table, columns=("id", "name", "class", "school", "contact", "joining"), show="headings", selectmode="extended")
+        for key, heading, width in (("id", "ID", 55), ("name", "Student", 190), ("class", "Class", 80), ("school", "School", 160), ("contact", "Contact", 110), ("joining", "Joining Date", 105)):
+            tree.heading(key, text=heading); tree.column(key, width=width, anchor="w")
+        scrollbar = ttk.Scrollbar(table, orient="vertical", command=tree.yview); tree.configure(yscrollcommand=scrollbar.set)
+        tree.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
+        rows = self.db.query("SELECT s.id,s.student_name,s.class_name,COALESCE(sc.school_name,'') school_name,s.contact,s.joining_date FROM students s LEFT JOIN schools sc ON sc.id=s.school_id WHERE s.status='Archived' ORDER BY s.student_name")
+        for row in rows:
+            tree.insert("", "end", values=(row["id"], row["student_name"], row["class_name"] or "", row["school_name"], row["contact"] or "", row["joining_date"]))
+        actions = ttk.Frame(shell, style="Form.TFrame"); actions.pack(fill="x", pady=(10, 0))
+        ttk.Button(actions, text="Close", command=dialog.destroy).pack(side="right")
+        def restore_selected():
+            selected = tree.selection()
+            if not selected:
+                messagebox.showinfo("Restore Students", "Select one or more archived students first.", parent=dialog)
+                return
+            for item in selected:
+                self.app.services.students.restore(int(tree.item(item, "values")[0]))
+                tree.delete(item)
+            self.app.refresh_all()
+            messagebox.showinfo("Restored", "Restored student(s) as Inactive. Activate them when ready.", parent=dialog)
+        ttk.Button(actions, text="Restore Selected", style="Accent.TButton", command=restore_selected).pack(side="right", padx=6)
+        dialog.grab_set()
 
     def clear(self) -> None:
         self.selected_id = None
@@ -672,6 +728,7 @@ class StudentsPage(CrudPage, ImportTemplateMixin):
             ) selected_mapping ON selected_mapping.person_id=s.id
             LEFT JOIN device_user_mappings m ON m.id=selected_mapping.mapping_id
             LEFT JOIN attendance_device_users u ON u.device_user_id=m.device_user_id
+            WHERE s.status <> 'Archived'
             ORDER BY s.student_name
             """
         )

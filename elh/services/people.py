@@ -9,7 +9,7 @@ class StudentService:
     GENDERS = ("Male", "Female", "Other")
     MAX_PHOTO_BYTES = 3 * 1024 * 1024
     PHOTO_MIME_TYPES = ("image/jpeg", "image/png")
-    STATUSES = ("Active", "Inactive")
+    STATUSES = ("Active", "Inactive", "Archived")
 
     def __init__(
         self,
@@ -49,6 +49,13 @@ class StudentService:
     def delete(self, student_id: int) -> None:
         self.repository.delete(student_id)
 
+    def archive(self, student_id: int) -> None:
+        self.repository.set_status(student_id, "Archived")
+
+    def restore(self, student_id: int) -> None:
+        """Restore safely as inactive; administration can reactivate when ready."""
+        self.repository.set_status(student_id, "Inactive")
+
     def validate(self, student: Student) -> Student:
         if not student.name.strip():
             raise ValueError("Student name is required.")
@@ -57,7 +64,7 @@ class StudentService:
             raise ValueError("Gender must be Male, Female, or Other.")
         status = student.status.strip().title() or "Active"
         if status not in self.STATUSES:
-            raise ValueError("Status must be Active or Inactive.")
+            raise ValueError("Status must be Active, Inactive, or Archived.")
         joining_date = validate_date(
             student.joining_date, "Joining date", date_format=self.date_format
         )
