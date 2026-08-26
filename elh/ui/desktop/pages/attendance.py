@@ -121,6 +121,7 @@ class AttendancePage(CrudPage):
                 ("serial", "Device Serial", 130),
             ],
         )
+        self.log_tree.bind("<Double-1>", self.view_attendance_log)
 
         controls = ttk.Frame(summary_tab, style="Toolbar.TFrame", padding=8)
         controls.pack(fill="x", pady=(0, 8))
@@ -215,6 +216,9 @@ class AttendancePage(CrudPage):
         if not selected:
             return
         device_id = str(self.mapping_tree.item(selected[0], "values")[0])
+        self.open_mapping_for_device(device_id)
+
+    def open_mapping_for_device(self, device_id: str) -> None:
         row = self.db.query_one(
             "SELECT * FROM device_user_mappings WHERE device_user_id = ?",
             (device_id,),
@@ -236,6 +240,42 @@ class AttendancePage(CrudPage):
             )
             self.vars["person"].set(target)
         self.show_form_dialog()
+
+    def view_attendance_log(self, _event=None) -> None:
+        selected = self.log_tree.selection()
+        if not selected:
+            return
+        values = self.log_tree.item(selected[0], "values")
+        if not values:
+            return
+        log_id, device_id, person_type, person, occurred_at, event, source, serial = values
+        dialog = tk.Toplevel(self)
+        dialog.title("Attendance Punch Details")
+        dialog.transient(self.winfo_toplevel())
+        dialog.resizable(False, False)
+        shell = ttk.Frame(dialog, padding=14, style="Form.TFrame")
+        shell.pack(fill="both", expand=True)
+        heading = "Unmapped Attendance Punch" if person_type == "Unmapped" else "Attendance Punch Details"
+        ttk.Label(shell, text=heading, style="SubTitle.TLabel").pack(anchor="w")
+        if person_type == "Unmapped":
+            ttk.Label(shell, text="This device user has punches but is not linked to a Student or Staff record.", style="Hint.TLabel", wraplength=520).pack(anchor="w", pady=(0, 10))
+        details = ttk.Frame(shell, style="Form.TFrame"); details.pack(fill="x")
+        for row, (label, value) in enumerate((
+            ("Log ID", log_id), ("Device User ID", device_id), ("Linked Type", person_type),
+            ("Student / Staff", person or "Not mapped"), ("Attendance Time", occurred_at),
+            ("Event", event), ("Source / Reason", source), ("Device Serial", serial),
+        )):
+            ttk.Label(details, text=label, style="Form.TLabel").grid(row=row, column=0, sticky="w", padx=(0, 12), pady=3)
+            ttk.Label(details, text=value or "-", style="FormValue.TLabel", wraplength=360).grid(row=row, column=1, sticky="w", pady=3)
+        actions = ttk.Frame(shell, style="Form.TFrame"); actions.pack(fill="x", pady=(14, 0))
+        ttk.Button(actions, text="Close", command=dialog.destroy).pack(side="right")
+        if person_type == "Unmapped":
+            def map_device_user():
+                dialog.destroy()
+                self.open_mapping_for_device(str(device_id))
+            ttk.Button(actions, text="Map Device User...", style="Accent.TButton", command=map_device_user).pack(side="right", padx=6)
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.grab_set()
 
     def save_mapping(self):
         try:
