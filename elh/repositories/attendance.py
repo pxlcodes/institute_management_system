@@ -191,6 +191,13 @@ class AttendanceRepository:
         return len(values)
 
     def device_users(self):
+        """Return physical attendance-device identities and their mappings.
+
+        Manual presence corrections intentionally use a synthetic ``MANUAL-*``
+        source in ``attendance_logs``.  They are already linked directly to the
+        selected student or staff member and must not be presented as an
+        unmapped device user that needs mapping.
+        """
         return self.db.query("""
             SELECT base.device_user_id,u.device_name,u.device_uid,u.privilege,u.card_number,
               COALESCE(u.device_serial,d.device_serial) device_serial,
@@ -200,6 +207,7 @@ class AttendanceRepository:
             FROM (
               SELECT device_user_id FROM attendance_device_users
               UNION SELECT device_user_id FROM attendance_logs
+                    WHERE device_user_id NOT LIKE 'MANUAL-%'
             ) base
             LEFT JOIN attendance_device_users u ON u.device_user_id=base.device_user_id
             LEFT JOIN (

@@ -728,6 +728,26 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual([row["student_name"] for row in absent], ["Absent Student"])
             self.assertEqual(absent[0]["device_status"], "Not linked")
 
+    def test_manual_attendance_is_linked_but_not_shown_as_an_unmapped_device_user(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = SQLiteDatabase(Path(folder) / "manual-attendance.db", False)
+            student_id = db.execute(
+                "INSERT INTO students (student_name,joining_date,status) VALUES (?,?,?)",
+                ("Manual Present Student", "2083/05/11", "Active"),
+            )
+            repository = AttendanceRepository(db)
+            created = repository.save_manual_present(
+                "student", student_id, datetime(2026, 8, 27, 18, 0),
+                "Device attendance missed",
+            )
+
+            self.assertTrue(created)
+            log = repository.logs()[0]
+            self.assertEqual(log["person_id"], student_id)
+            self.assertEqual(log["person_name"], "Manual Present Student")
+            self.assertEqual(log["event_type"], "Manual Present")
+            self.assertEqual(repository.device_users(), [])
+
     def test_attendance_mapping_merges_existing_punches_and_calculates_staff_totals(self):
         with tempfile.TemporaryDirectory() as folder:
             db = SQLiteDatabase(Path(folder) / "attendance.db", False)
