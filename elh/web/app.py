@@ -154,6 +154,31 @@ class CompanyProfileInput(BaseModel):
     report_footer: str = ""
 
 
+class TransferInput(BaseModel):
+    transfer_date: str
+    from_account_id: int
+    to_account_id: int
+    amount: float = Field(gt=0)
+    transfer_charge: float = Field(default=0, ge=0)
+    reference_no: str = ""
+    remarks: str = ""
+
+
+class TodoInput(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+    details: str = ""
+    assigned_teacher_id: int | None = None
+    due_date: str = ""
+    priority: Literal["Low", "Normal", "High"] = "Normal"
+
+
+class BugReportInput(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+    details: str = Field(min_length=1)
+    page_name: str = ""
+    severity: Literal["Low", "Normal", "High", "Critical"] = "Normal"
+
+
 def create_app() -> FastAPI:
     """Create the web adapter without changing the existing business services."""
     config = load_config()
@@ -512,6 +537,73 @@ def create_app() -> FastAPI:
         return records(db.query(
             "SELECT l.*,a.account_name FROM ledger l JOIN accounts a ON a.id=l.account_id ORDER BY l.transaction_date DESC,l.id DESC LIMIT 1000"
         ))
+
+    @app.get("/api/transfers")
+    def transfers(_user=Depends(require("finance.manage"))):
+        return records(db.query(
+            "SELECT tr.*,fa.account_name from_account,ta.account_name to_account "
+            "FROM account_transfers tr JOIN accounts fa ON fa.id=tr.from_account_id "
+            "JOIN accounts ta ON ta.id=tr.to_account_id ORDER BY tr.transfer_date DESC,tr.id DESC"
+        ))
+
+    @app.post("/api/transfers", status_code=201)
+    def create_transfer(payload: TransferInput, _user=Depends(require("finance.manage"))):
+        transfer_date = validate_date(payload.transfer_date, "Transfer date", date_format=config.date_format)
+        if payload.from_account_id == payload.to_account_id:
+            raise HTTPException(status_code=422, detail="Choose different source and destination accounts.")
+        amount = positive(payload.amount, "Transfer amount")
+        charge = Decimal(str(payload.transfer_charge))
+        if db.account_balance(payload.from_account_id) < amount + charge:
+            raise HTTPException(status_code=422, detail="The source account does not have enough balance.")
+        def callback(conn):
+            cursor = conn.execute(
+                "INSERT INTO account_transfers (transfer_date,from_account_id,to_account_id,amount,transfer_charge,reference_no,remarks) VALUES (?,?,?,?,?,?,?)",
+                (transfer_date, payload.from_account_id, payload.to_account_id, str(amount), str(charge),
+                 payload.reference_no.strip(), payload.remarks.strip()),
+            )
+            transfer_id = int(cursor.lastrowid)
+            cursor.close()
+            db.add_ledger(conn, transfer_date, payload.from_account_id, "OUT", amount + charge,
+                          "Account Transfer", transfer_id, "Transfer out", payload.reference_no.strip(), payload.remarks.strip())
+            db.add_ledger(conn, transfer_date, payload.to_account_id, "IN", amount,
+                          "Account Transfer", transfer_id, "Transfer in", payload.reference_no.strip(), payload.remarks.strip())
+            return transfer_id
+        return {"id": db.transaction(callback)}
+
+    @app.get("/api/tasks")
+    def tasks(_user=Depends(require("dashboard.view"))):
+        return records(db.query(
+            "SELECT t.*,COALESCE(s.teacher_name,'Unassigned') assigned_to "
+            "FROM todo_items t LEFT JOIN teachers s ON s.id=t.assigned_teacher_id "
+            "ORDER BY t.status='Done',t.due_date,t.id DESC"
+        ))
+
+    @app.post("/api/tasks", status_code=201)
+    def create_task(payload: TodoInput, user=Depends(require("dashboard.view"))):
+        due_date = validate_date(payload.due_date, "Due date", allow_blank=True, date_format=config.date_format)
+        return {"id": db.execute(
+            "INSERT INTO todo_items (title,details,assigned_teacher_id,due_date,priority,status,created_by_user_id) VALUES (?,?,?,?,?,'Open',?)",
+            (payload.title.strip(), payload.details.strip(), payload.assigned_teacher_id, due_date, payload.priority, user.user_id),
+        )}
+
+    @app.post("/api/tasks/{task_id}/complete")
+    def complete_task(task_id: int, _user=Depends(require("dashboard.view"))):
+        db.execute("UPDATE todo_items SET status='Done',completed_at=CURRENT_TIMESTAMP WHERE id=?", (task_id,))
+        return {"ok": True}
+
+    @app.get("/api/bug-reports")
+    def bug_reports(_user=Depends(require("dashboard.view"))):
+        return records(db.query(
+            "SELECT b.*,COALESCE(u.display_name,u.username,'Unknown') reported_by "
+            "FROM bug_reports b LEFT JOIN app_users u ON u.id=b.reported_by_user_id ORDER BY b.status='Resolved',b.id DESC"
+        ))
+
+    @app.post("/api/bug-reports", status_code=201)
+    def create_bug_report(payload: BugReportInput, user=Depends(require("dashboard.view"))):
+        return {"id": db.execute(
+            "INSERT INTO bug_reports (title,details,page_name,severity,status,reported_by_user_id) VALUES (?,?,?,?,'Open',?)",
+            (payload.title.strip(), payload.details.strip(), payload.page_name.strip(), payload.severity, user.user_id),
+        )}
 
     @app.get("/api/company-profile")
     def company_profile(_user=Depends(require("administration.manage"))):
