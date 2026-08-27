@@ -22,6 +22,7 @@ class DashboardPage(BasePage):
         self.cards = {}
         self.attendance_alerts_by_student = {}
         self.absent_students_by_student = {}
+        self.show_suppressed_alerts = False
         self._attendance_cache = None
         self._attendance_after_id = None
         self._attendance_generation = 0
@@ -74,7 +75,10 @@ class DashboardPage(BasePage):
         self.alert_tree.bind("<Double-1>", self.review_selected_alert)
         alert_actions = ttk.Frame(attendance_tab, style="Toolbar.TFrame", padding=(8, 4)); alert_actions.pack(fill="x")
         ttk.Button(alert_actions, text="Review Selected Alert", style="Accent.TButton", command=self.review_selected_alert).pack(side="left")
-        ttk.Label(alert_actions, text="Select an alert and press review, or double-click it.", style="Hint.TLabel").pack(side="left", padx=10)
+        ttk.Button(alert_actions, text="Suppress Follow-up...", command=self.suppress_selected_alert).pack(side="left", padx=(6, 0))
+        self.suppressed_toggle = ttk.Button(alert_actions, text="Show Suppressed", command=self.toggle_suppressed_alerts)
+        self.suppressed_toggle.pack(side="left", padx=(6, 0))
+        ttk.Label(alert_actions, text="Suppress keeps an audit record; a resume date brings it back automatically.", style="Hint.TLabel").pack(side="left", padx=10)
 
         ttk.Label(present_tab, text="Students Present Today", style="SubTitle.TLabel").pack(
             anchor="w", pady=(8, 7), padx=4
@@ -230,7 +234,9 @@ class DashboardPage(BasePage):
             present_students = self.app.services.attendance.students_present_today()
             absent_students = self.app.services.attendance.students_absent_today()
             punched_not_enrolled = self.app.services.attendance.students_punched_not_enrolled()
-            attendance_alerts = self.app.services.attendance.student_attendance_alerts()
+            attendance_alerts = self.app.services.attendance.student_attendance_alerts(
+                include_suppressed=self.show_suppressed_alerts,
+            )
             if generation != self._attendance_generation:
                 return
             self._attendance_cache = (time.monotonic(), present_students, absent_students, punched_not_enrolled, attendance_alerts)
@@ -320,7 +326,10 @@ class DashboardPage(BasePage):
         ttk.Label(shell, text=details, style="Form.TLabel", justify="left").pack(anchor="w", pady=(0, 10))
         if alert["review_status"] != "Not reviewed":
             ttk.Label(shell, text=f"Previous review: {alert['review_status']} by {alert['reviewer'] or 'Unknown'}; follow up {alert['follow_up_date'] or '-'}\n{alert['review_note'] or ''}", style="Hint.TLabel", justify="left", wraplength=620).pack(anchor="w", pady=(0, 10))
-        values = {"status": tk.StringVar(value=alert["review_status"] if alert["review_status"] != "Not reviewed" else "Monitoring"), "follow_up": tk.StringVar(value=alert["follow_up_date"] or ""), "note": tk.StringVar(value=alert["review_note"] or "")}
+        initial_status = alert["review_status"]
+        if initial_status in {"Not reviewed", "Suppressed", "Suppression expired"}:
+            initial_status = "Monitoring"
+        values = {"status": tk.StringVar(value=initial_status), "follow_up": tk.StringVar(value=alert["follow_up_date"] or ""), "note": tk.StringVar(value=alert["review_note"] or "")}
         form = ttk.Frame(shell, style="Form.TFrame"); form.pack(fill="x")
         fb = FormBuilder(form); fb.combo("Review Status *", values["status"], ["Contacted", "Monitoring", "Approved Leave", "Left Institution", "No Action Needed"]); fb.entry("Follow-up Date", values["follow_up"], width=42); fb.entry("Review Notes", values["note"], width=42)
         def save_review():
@@ -331,6 +340,77 @@ class DashboardPage(BasePage):
             except Exception as exc:
                 messagebox.showerror("Attendance Review", str(exc), parent=dialog)
         ttk.Button(shell, text="Save Review", style="Accent.TButton", command=save_review).pack(anchor="e", pady=(12, 0))
+
+    def _selected_alert(self):
+        selected = self.alert_tree.selection()
+        if not selected:
+            messagebox.showinfo("Attendance Follow-up", "Select an attendance alert first.", parent=self)
+            return None
+        try:
+            return self.attendance_alerts_by_student.get(
+                int(str(selected[0]).removeprefix("alert-"))
+            )
+        except ValueError:
+            return None
+
+    def toggle_suppressed_alerts(self) -> None:
+        self.show_suppressed_alerts = not self.show_suppressed_alerts
+        self.suppressed_toggle.configure(
+            text="Hide Suppressed" if self.show_suppressed_alerts else "Show Suppressed"
+        )
+        self.invalidate_cache()
+        self.refresh()
+
+    def suppress_selected_alert(self) -> None:
+        alert = self._selected_alert()
+        if not alert:
+            return
+        if alert.get("suppressed"):
+            messagebox.showinfo(
+                "Attendance Follow-up", "This follow-up is already suppressed.", parent=self,
+            )
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("Suppress Attendance Follow-up")
+        dialog.transient(self.winfo_toplevel())
+        dialog.resizable(False, False)
+        shell = ttk.Frame(dialog, padding=14, style="Form.TFrame")
+        shell.pack(fill="both", expand=True)
+        ttk.Label(shell, text=f"Suppress follow-up — {alert['student_name']}", style="SubTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            shell,
+            text="The alert will be hidden from normal follow-up. Add a resume date to show it again automatically; leave it blank to keep it suppressed until restored manually.",
+            style="Hint.TLabel", wraplength=560, justify="left",
+        ).pack(anchor="w", pady=(3, 12))
+        values = {"reason": tk.StringVar(), "resume": tk.StringVar()}
+        form = ttk.Frame(shell, style="Form.TFrame")
+        form.pack(fill="x")
+        builder = FormBuilder(form)
+        builder.entry("Suppression Reason *", values["reason"], width=46)
+        builder.entry("Resume Follow-up Date (BS)", values["resume"], width=46)
+        actions = ttk.Frame(shell, style="Form.TFrame")
+        actions.pack(fill="x", pady=(14, 0))
+        ttk.Button(actions, text="Cancel", command=dialog.destroy).pack(side="right")
+
+        def save_suppression():
+            try:
+                reason = values["reason"].get().strip()
+                if not reason:
+                    raise ValueError("Enter a reason for suppressing this follow-up.")
+                resume = validate_date(values["resume"].get(), "Resume follow-up date", True)
+                self.app.services.attendance.record_attendance_alert_review(
+                    alert["student_id"], "Suppressed", reason, resume,
+                    self.app.session.user_id,
+                )
+                dialog.destroy()
+                self.invalidate_cache()
+                self.refresh()
+            except Exception as exc:
+                messagebox.showerror("Suppress Follow-up", str(exc), parent=dialog)
+
+        ttk.Button(actions, text="Suppress", style="Accent.TButton", command=save_suppression).pack(side="right", padx=(0, 6))
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.grab_set()
 
     def send_selected_absence_sms(self, _event=None):
         selected = self.absent_tree.selection()

@@ -293,7 +293,7 @@ class AttendanceService:
             })
         return totals
 
-    def student_attendance_alerts(self) -> list[dict]:
+    def student_attendance_alerts(self, include_suppressed: bool = False) -> list[dict]:
         """Return review alerts for active enrolled students with attendance gaps.
 
         Students are evaluated only on active routine days for their saved class/level.
@@ -301,6 +301,7 @@ class AttendanceService:
         consecutive_limit = max(1, self.settings.get_int("attendance_consecutive_absence_days", 3)) if self.settings else 3
         monthly_limit = max(1, self.settings.get_int("attendance_monthly_irregular_days", 5)) if self.settings else 5
         today_ad = datetime.now().date()
+        today_bs = nepali.date.today().strftime("%Y/%m/%d")
         start_at, end_at, _ = self._month_range(nepali.date.today().strftime("%Y/%m"), "Attendance month")
         monthly_punches: dict[int, set] = defaultdict(set)
         for row in self.repository.student_logs(start_at, end_at):
@@ -359,6 +360,16 @@ class AttendanceService:
                 reasons.append(f"{missing_days} missing day(s) this month")
             if reasons:
                 review = reviews.get(int(row["id"]))
+                review_status = review["review_status"] if review else "Not reviewed"
+                follow_up_date = review["follow_up_date"] if review else ""
+                suppressed = (
+                    review_status == "Suppressed"
+                    and (not follow_up_date or str(follow_up_date) >= today_bs)
+                )
+                if suppressed and not include_suppressed:
+                    continue
+                if review_status == "Suppressed" and not suppressed:
+                    review_status = "Suppression expired"
                 last_seen = row["last_seen"]
                 alerts.append({
                     "student_id": int(row["id"]), "student_name": row["student_name"],
@@ -367,16 +378,20 @@ class AttendanceService:
                     "last_seen": last_seen,
                     "consecutive_days": consecutive_days, "monthly_missing_days": missing_days,
                     "reason": "; ".join(reasons),
-                    "review_status": review["review_status"] if review else "Not reviewed",
+                    "review_status": review_status,
                     "review_note": review["note"] if review else "",
-                    "follow_up_date": review["follow_up_date"] if review else "",
+                    "follow_up_date": follow_up_date,
                     "reviewer": review["reviewer"] if review else "",
                     "reviewed_at": review["created_at"] if review else None,
+                    "suppressed": suppressed,
                 })
         return sorted(alerts, key=lambda row: (-row["consecutive_days"], -row["monthly_missing_days"], row["student_name"].casefold()))
 
     def record_attendance_alert_review(self, student_id: int, status: str, note: str, follow_up_date: str, user_id: int | None) -> None:
-        allowed = {"Contacted", "Monitoring", "Approved Leave", "Left Institution", "No Action Needed"}
+        allowed = {
+            "Contacted", "Monitoring", "Approved Leave", "Left Institution",
+            "No Action Needed", "Suppressed",
+        }
         if status not in allowed:
             raise ValueError("Select a valid review status.")
         self.repository.db.execute(

@@ -748,6 +748,25 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(log["event_type"], "Manual Present")
             self.assertEqual(repository.device_users(), [])
 
+    def test_attendance_review_accepts_suppressed_status(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = SQLiteDatabase(Path(folder) / "attendance-suppression.db", False)
+            student_id = db.execute(
+                "INSERT INTO students (student_name,joining_date,status) VALUES (?,?,?)",
+                ("Suppressed Student", "2083/05/11", "Active"),
+            )
+            service = AttendanceService(AttendanceRepository(db), DisabledAttendanceDevice())
+            service.record_attendance_alert_review(
+                student_id, "Suppressed", "Approved leave", "2083/06/01", None,
+            )
+            review = db.query_one(
+                "SELECT review_status,note,follow_up_date FROM attendance_alert_reviews WHERE student_id=?",
+                (student_id,),
+            )
+            self.assertEqual(dict(review), {
+                "review_status": "Suppressed", "note": "Approved leave", "follow_up_date": "2083/06/01",
+            })
+
     def test_attendance_mapping_merges_existing_punches_and_calculates_staff_totals(self):
         with tempfile.TemporaryDirectory() as folder:
             db = SQLiteDatabase(Path(folder) / "attendance.db", False)
