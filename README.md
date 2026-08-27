@@ -183,10 +183,19 @@ Environment settings take effect after restart. Runtime settings take effect as 
 
 Web handlers should import `elh.config`, `elh.core.validation`, `elh.core.settings`, and `elh.core.health` directly. Those modules have no dependency on Tkinter. The desktop file is a presentation adapter; keep future HTTP routing and serialization in a separate adapter rather than importing UI page classes.
 
-## Browser application (initial web release)
+## Browser application
 
-The repository now also contains a lightweight browser application that uses the same MySQL
-database, login accounts, permissions, validation, and service layer as the desktop application.
+The repository contains a browser application that uses the same MySQL database, login accounts,
+permissions, validation, business services, Nepali BS dates, and live records as the desktop
+application. It does not copy, import, or migrate operational data just to use the web interface.
+
+The web application currently provides:
+
+- Dashboard, today’s attendance, absence follow-up, manual attendance correction, and punched-but-not-enrolled review.
+- Student registration, editing, archiving, searching, status filtering, CSV export, and enrollment status.
+- Enrollments, multi-student/month bill generation, payment collection with discounts, and bill export.
+- Courses, schools, staff, accounts, income, expenses, and ledger views with create and export workflows.
+- Role-controlled access, company/report details, browser printing, and responsive navigation for smaller screens.
 It includes sign-in, dashboard figures, student search/creation, course enrollment, and an
 attendance follow-up list for students who have punched in but are not enrolled. It does not
 move or duplicate existing data.
@@ -198,10 +207,18 @@ python -m pip install -r requirements-web.txt
 .\run_web.ps1
 ```
 
-Open `http://localhost:8080` in a browser. For another device on the same local network, use
+Open `http://localhost:8080` in a browser. Sign in using an enabled account already managed in the
+desktop System Administration screen. For another device on the same local network, use
 this computer's IP address with port `8080`; protect that network access with a firewall or
 reverse proxy before exposing it outside the institution. The existing desktop application
-continues to work unchanged while remaining modules are migrated to the web interface.
+continues to work unchanged and can be used alongside the browser application.
+
+### Web deployment notes
+
+Keep the web server on the same trusted network as MySQL, configure a fixed host/port in the
+server environment, and place HTTPS/reverse-proxy protection in front of it before Internet access.
+The `.env` file remains private: it provides the database connection and service defaults and must
+never be committed or shared. Back up the MySQL database before any production upgrade.
 
 ## Database normalization and performance
 
