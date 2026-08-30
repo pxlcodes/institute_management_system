@@ -4,6 +4,8 @@ import secrets
 from decimal import Decimal
 from typing import Literal
 
+import nepali_datetime as nepali
+
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -177,6 +179,15 @@ class BugReportInput(BaseModel):
     details: str = Field(min_length=1)
     page_name: str = ""
     severity: Literal["Low", "Normal", "High", "Critical"] = "Normal"
+
+
+class CalendarEventInput(BaseModel):
+    event_name: str = Field(min_length=1, max_length=255)
+    event_type: Literal["Holiday", "Closure", "Working Day", "Event"] = "Holiday"
+    start_date: str
+    end_date: str = ""
+    status: Literal["Active", "Inactive"] = "Active"
+    remarks: str = ""
 
 
 def create_app() -> FastAPI:
@@ -414,6 +425,29 @@ def create_app() -> FastAPI:
         follow_up = validate_date(payload.follow_up_date, "Follow-up date", allow_blank=True, date_format=config.date_format)
         services.attendance.record_attendance_alert_review(student_id, payload.status, payload.note, follow_up, user.user_id)
         return {"ok": True}
+
+    @app.get("/api/academic-calendar")
+    def academic_calendar(month: str = "", _user=Depends(require("devices.manage"))):
+        selected_month = month or nepali.date.today().strftime("%Y/%m")
+        return {
+            "month": selected_month,
+            "days": services.attendance.academic_calendar_month(selected_month),
+            "events": records(db.query(
+                "SELECT * FROM academic_calendar_events WHERE start_date<=? AND end_date>=? ORDER BY start_date,id",
+                (f"{selected_month}/99", f"{selected_month}/01"),
+            )),
+        }
+
+    @app.post("/api/academic-calendar", status_code=201)
+    def create_calendar_event(payload: CalendarEventInput, _user=Depends(require("master_data.manage"))):
+        start_date = validate_date(payload.start_date, "Start date", date_format=config.date_format)
+        end_date = validate_date(payload.end_date, "End date", allow_blank=True, date_format=config.date_format) or start_date
+        if end_date < start_date:
+            raise HTTPException(status_code=422, detail="End date cannot be before start date.")
+        return {"id": db.execute(
+            "INSERT INTO academic_calendar_events (event_name,event_type,start_date,end_date,status,remarks) VALUES (?,?,?,?,?,?)",
+            (payload.event_name.strip(), payload.event_type, start_date, end_date, payload.status, payload.remarks.strip()),
+        )}
 
     @app.get("/api/bills")
     def bills(_user=Depends(require("billing.manage"))):

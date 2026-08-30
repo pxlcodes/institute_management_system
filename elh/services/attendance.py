@@ -225,10 +225,13 @@ class AttendanceService:
                 "WHERE r.class_name=? AND r.status='Active'",
                 (class_name,),
             )
+        calendar_events = self._calendar_events_between(start_date, end_date)
         working_dates = []
         for offset in range((end_date - start_date).days + 1):
             current_date = start_date + timedelta(days=offset)
             business_date = self._business_date_from_ad(current_date)
+            if self._is_calendar_closed(business_date, calendar_events):
+                continue
             if any(
                 row["day_of_week"] == self._day_name(current_date)
                 and row["effective_from"] <= business_date
@@ -237,6 +240,49 @@ class AttendanceService:
             ):
                 working_dates.append(current_date)
         return working_dates
+
+    def _calendar_events_between(self, start_date, end_date) -> list[dict]:
+        """Return active calendar events that overlap an AD date range."""
+        start_bs = self._business_date_from_ad(start_date)
+        end_bs = self._business_date_from_ad(end_date)
+        return self.repository.db.query(
+            "SELECT id,event_name,event_type,start_date,end_date,status,remarks "
+            "FROM academic_calendar_events WHERE status='Active' "
+            "AND start_date<=? AND end_date>=? ORDER BY start_date,id",
+            (end_bs, start_bs),
+        )
+
+    @staticmethod
+    def _is_calendar_closed(business_date: str, calendar_events: list[dict]) -> bool:
+        """Holiday and closure events override an otherwise scheduled routine day."""
+        return any(
+            event["event_type"] in {"Holiday", "Closure"}
+            and event["start_date"] <= business_date <= event["end_date"]
+            for event in calendar_events
+        )
+
+    def academic_calendar_month(self, month_value: str) -> list[dict]:
+        """Provide a BS-month calendar for UIs without duplicating date conversion."""
+        month_value = validate_month(month_value, "Calendar month")
+        year, month = (int(part) for part in month_value.split("/"))
+        first = nepali.date(year, month, 1)
+        next_month = nepali.date(year + 1, 1, 1) if month == 12 else nepali.date(year, month + 1, 1)
+        events = self._calendar_events_between(
+            first.to_datetime_date(), next_month.to_datetime_date() - timedelta(days=1)
+        )
+        days = []
+        for day in range(1, (next_month - first).days + 1):
+            value = nepali.date(year, month, day)
+            business_date = value.strftime("%Y/%m/%d")
+            day_events = [dict(event) for event in events if event["start_date"] <= business_date <= event["end_date"]]
+            days.append({
+                "date": business_date,
+                "day": day,
+                "day_name": self._day_name(value.to_datetime_date()),
+                "closed": self._is_calendar_closed(business_date, events),
+                "events": day_events,
+            })
+        return days
 
     @staticmethod
     def _business_date_from_ad(value) -> str:

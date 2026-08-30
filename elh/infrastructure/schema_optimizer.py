@@ -40,7 +40,9 @@ GRADE_VERSION = 13
 GRADE_NAME = "add grade master records and link existing class levels"
 ROUTINE_PLAN_VERSION = 14
 ROUTINE_PLAN_NAME = "version academic routines with effective dates"
-LATEST_SCHEMA_VERSION = ROUTINE_PLAN_VERSION
+ACADEMIC_CALENDAR_VERSION = 15
+ACADEMIC_CALENDAR_NAME = "add academic calendar closures and working-day events"
+LATEST_SCHEMA_VERSION = ACADEMIC_CALENDAR_VERSION
 
 
 INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
@@ -80,6 +82,7 @@ INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("class_routines", "idx_routines_teacher_day", ("teacher_id", "day_of_week", "status")),
     ("class_routines", "idx_routines_plan_day", ("routine_plan_id", "day_of_week", "status")),
     ("routine_plans", "idx_routine_plans_status_dates", ("status", "effective_from", "effective_to")),
+    ("academic_calendar_events", "idx_calendar_event_dates", ("start_date", "end_date", "status")),
     ("students", "idx_students_class_level", ("class_level_id", "status")),
     ("due_bills", "idx_due_bills_status_due", ("status", "due_date")),
     ("due_bills", "idx_due_bills_issue", ("issue_date",)),
@@ -203,6 +206,7 @@ def normalize_mysql_schema(db) -> None:
         ensure_mysql_class_level_migration(db)
         ensure_mysql_grade_migration(db)
         ensure_mysql_routine_plan_migration(db)
+        ensure_mysql_academic_calendar_migration(db)
         ensure_mysql_indexes(db)
         ensure_mysql_bill_month_guard(db)
         ensure_mysql_certificate_migration(db)
@@ -254,6 +258,7 @@ def normalize_mysql_schema(db) -> None:
     ensure_mysql_class_level_migration(db)
     ensure_mysql_grade_migration(db)
     ensure_mysql_routine_plan_migration(db)
+    ensure_mysql_academic_calendar_migration(db)
     ensure_mysql_indexes(db)
     ensure_mysql_bill_month_guard(db)
     ensure_mysql_certificate_migration(db)
@@ -578,6 +583,22 @@ def ensure_mysql_routine_plan_migration(db) -> None:
         )
 
 
+def ensure_mysql_academic_calendar_migration(db) -> None:
+    """Store holiday/closure exceptions independently from the weekly routine."""
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS academic_calendar_events ("
+        "id INTEGER AUTO_INCREMENT PRIMARY KEY,event_name VARCHAR(255) NOT NULL,"
+        "event_type VARCHAR(30) NOT NULL,start_date VARCHAR(10) NOT NULL,end_date VARCHAR(10) NOT NULL,"
+        "status VARCHAR(30) NOT NULL DEFAULT 'Active',remarks TEXT,"
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB"
+    )
+    if not db.query_one("SELECT version FROM schema_migrations WHERE version=?", (ACADEMIC_CALENDAR_VERSION,)):
+        db.execute(
+            "INSERT INTO schema_migrations (version,migration_name) VALUES (?,?)",
+            (ACADEMIC_CALENDAR_VERSION, ACADEMIC_CALENDAR_NAME),
+        )
+
+
 def ensure_mysql_bill_month_guard(db) -> None:
     """Enforce the cross-table bill-month rule without a redundant column."""
     definitions = {
@@ -769,6 +790,11 @@ def normalize_sqlite_schema(path) -> None:
               id INTEGER PRIMARY KEY AUTOINCREMENT,short_name TEXT NOT NULL UNIQUE,grade_name TEXT NOT NULL UNIQUE,
               status TEXT NOT NULL DEFAULT 'Active',remarks TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS academic_calendar_events (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,event_name TEXT NOT NULL,event_type TEXT NOT NULL,
+              start_date TEXT NOT NULL,end_date TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'Active',
+              remarks TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
         if "class_count" not in _sqlite_columns(connection, "salary_payouts"):
@@ -926,6 +952,7 @@ def normalize_sqlite_schema(path) -> None:
         )
         connection.execute("INSERT OR IGNORE INTO schema_migrations (version,migration_name) VALUES (?,?)", (GRADE_VERSION, GRADE_NAME))
         connection.execute("INSERT OR IGNORE INTO schema_migrations (version,migration_name) VALUES (?,?)", (ROUTINE_PLAN_VERSION, ROUTINE_PLAN_NAME))
+        connection.execute("INSERT OR IGNORE INTO schema_migrations (version,migration_name) VALUES (?,?)", (ACADEMIC_CALENDAR_VERSION, ACADEMIC_CALENDAR_NAME))
         connection.commit()
     except Exception:
         connection.rollback()

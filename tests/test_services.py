@@ -144,7 +144,13 @@ class ServiceTests(unittest.TestCase):
             )
             self.assertEqual(
                 int(db.query_one("SELECT MAX(version) version FROM schema_migrations")["version"]),
-                14,
+                15,
+            )
+            self.assertIsNotNone(
+                db.query_one(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name='academic_calendar_events'"
+                )
             )
             certificate_columns = {
                 row["name"] for row in db.query("PRAGMA table_info(course_certificates)")
@@ -727,6 +733,25 @@ class ServiceTests(unittest.TestCase):
             absent = service.students_absent_today()
             self.assertEqual([row["student_name"] for row in absent], ["Absent Student"])
             self.assertEqual(absent[0]["device_status"], "Not linked")
+
+    def test_calendar_holiday_excludes_a_scheduled_attendance_day(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = SQLiteDatabase(Path(folder) / "calendar-holiday.db", False)
+            service = AttendanceService(AttendanceRepository(db), DisabledAttendanceDevice())
+            today = date.today()
+            business_date = service._business_date_from_ad(today)
+            db.execute(
+                "INSERT INTO academic_calendar_events "
+                "(event_name,event_type,start_date,end_date,status) VALUES (?,?,?,?,?)",
+                ("Institute holiday", "Holiday", business_date, business_date, "Active"),
+            )
+            routine = [{
+                "day_of_week": service._day_name(today),
+                "effective_from": "2000/01/01", "effective_to": "",
+            }]
+            self.assertEqual(
+                service._working_dates_for_class("10", today, today, routine), []
+            )
 
     def test_manual_attendance_is_linked_but_not_shown_as_an_unmapped_device_user(self):
         with tempfile.TemporaryDirectory() as folder:
