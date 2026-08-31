@@ -215,42 +215,69 @@ class AttendanceService:
 
     def _working_dates_for_class(
         self, class_name: str, start_date, end_date, routine_rows: list[dict] | None = None,
+        course_ids: set[int] | None = None,
     ) -> list:
         if not class_name or end_date < start_date:
             return []
         if routine_rows is None:
             routine_rows = self.repository.db.query(
-                "SELECT r.day_of_week,p.effective_from,p.effective_to FROM class_routines r "
+                "SELECT r.day_of_week,r.course_id,p.effective_from,p.effective_to FROM class_routines r "
                 "JOIN routine_plans p ON p.id=r.routine_plan_id "
                 "WHERE r.class_name=? AND r.status='Active'",
                 (class_name,),
             )
-        calendar_events = self._calendar_events_between(start_date, end_date)
+        calendar_events = self._calendar_events_between(start_date, end_date, course_ids)
         working_dates = []
         for offset in range((end_date - start_date).days + 1):
             current_date = start_date + timedelta(days=offset)
             business_date = self._business_date_from_ad(current_date)
-            if self._is_calendar_closed(business_date, calendar_events):
-                continue
-            if any(
+            scheduled_rows = [row for row in routine_rows if (
                 row["day_of_week"] == self._day_name(current_date)
                 and row["effective_from"] <= business_date
                 and (not row["effective_to"] or row["effective_to"] > business_date)
-                for row in routine_rows
+            )]
+            if not scheduled_rows:
+                continue
+            global_closure = any(
+                event["event_type"] in {"Holiday", "Closure"}
+                and event["course_id"] is None
+                and event["start_date"] <= business_date <= event["end_date"]
+                for event in calendar_events
+            )
+            if global_closure:
+                continue
+            closed_courses = {
+                int(event["course_id"]) for event in calendar_events
+                if event["event_type"] in {"Holiday", "Closure"}
+                and event["course_id"] is not None
+                and event["start_date"] <= business_date <= event["end_date"]
+            }
+            if course_ids is None or any(
+                row["course_id"] is None or int(row["course_id"]) not in closed_courses
+                for row in scheduled_rows
             ):
                 working_dates.append(current_date)
         return working_dates
 
-    def _calendar_events_between(self, start_date, end_date) -> list[dict]:
-        """Return active calendar events that overlap an AD date range."""
+    def _calendar_events_between(self, start_date, end_date, course_ids: set[int] | None = None) -> list[dict]:
+        """Return active global or applicable course calendar events overlapping an AD range."""
         start_bs = self._business_date_from_ad(start_date)
         end_bs = self._business_date_from_ad(end_date)
-        return self.repository.db.query(
-            "SELECT id,event_name,event_type,start_date,end_date,status,remarks "
-            "FROM academic_calendar_events WHERE status='Active' "
-            "AND start_date<=? AND end_date>=? ORDER BY start_date,id",
-            (end_bs, start_bs),
+        sql = (
+            "SELECT event.id,event.event_name,event.event_type,event.course_id,event.start_date,event.end_date,"
+            "event.status,event.remarks,c.course_name FROM academic_calendar_events event "
+            "LEFT JOIN courses c ON c.id=event.course_id WHERE event.status='Active' "
+            "AND event.start_date<=? AND event.end_date>=?"
         )
+        params: list = [end_bs, start_bs]
+        if course_ids is not None:
+            if course_ids:
+                placeholders = ",".join("?" for _ in course_ids)
+                sql += f" AND (event.course_id IS NULL OR event.course_id IN ({placeholders}))"
+                params.extend(sorted(course_ids))
+            else:
+                sql += " AND event.course_id IS NULL"
+        return self.repository.db.query(sql + " ORDER BY event.start_date,event.id", tuple(params))
 
     @staticmethod
     def _is_calendar_closed(business_date: str, calendar_events: list[dict]) -> bool:
@@ -355,7 +382,8 @@ class AttendanceService:
             monthly_punches[int(row["person_id"])].add(occurred.date())
         rows = self.repository.db.query(
             "SELECT s.id,s.student_name,s.class_name,s.contact,s.parent_name,"
-            "GROUP_CONCAT(DISTINCT c.course_name) courses,MIN(e.start_date) enrollment_start,MAX(l.occurred_at) last_seen "
+            "GROUP_CONCAT(DISTINCT c.course_name) courses,GROUP_CONCAT(DISTINCT e.course_id) course_ids,"
+            "MIN(e.start_date) enrollment_start,MAX(l.occurred_at) last_seen "
             "FROM students s JOIN enrollments e ON e.student_id=s.id AND e.status='Active' "
             "JOIN courses c ON c.id=e.course_id "
             "LEFT JOIN attendance_logs l ON l.person_type='student' AND l.person_id=s.id "
@@ -368,7 +396,7 @@ class AttendanceService:
         )
         reviews = {int(row["student_id"]): row for row in review_rows}
         routine_rows = self.repository.db.query(
-            "SELECT r.class_name,r.day_of_week,p.effective_from,p.effective_to "
+            "SELECT r.class_name,r.day_of_week,r.course_id,p.effective_from,p.effective_to "
             "FROM class_routines r JOIN routine_plans p ON p.id=r.routine_plan_id "
             "WHERE r.status='Active'"
         )
@@ -385,9 +413,11 @@ class AttendanceService:
             if enrollment_start > today_ad:
                 continue
             relevant_month_start = max(month_start_ad, enrollment_start)
+            course_ids = {int(value) for value in str(row["course_ids"] or "").split(",") if value}
             working_dates = self._working_dates_for_class(
                 row["class_name"] or "", enrollment_start, today_ad,
                 routines_by_class.get(row["class_name"] or "", []),
+                course_ids,
             )
             if not working_dates:
                 continue
@@ -469,8 +499,9 @@ class AttendanceService:
                 started = self._business_date_to_ad(str(row["enrollment_start"]))
             except Exception:
                 continue
+            course_ids = {int(value) for value in str(row["course_ids"] or "").split(",") if value}
             if started <= today_ad and self._working_dates_for_class(
-                row["class_name"] or "", today_ad, today_ad
+                row["class_name"] or "", today_ad, today_ad, course_ids=course_ids
             ):
                 absent.append(row)
         return absent

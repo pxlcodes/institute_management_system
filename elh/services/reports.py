@@ -132,18 +132,30 @@ class ReportsService:
         )
 
     def print_absent_students_pos(self, students: list[dict]) -> None:
-        """Print a short attendance follow-up list without financial columns."""
+        """Print a short attendance follow-up list grouped by class/grade."""
         if not self.printing:
             raise ValueError("POS printing service is unavailable.")
         if not students:
             raise ValueError("There are no absent students to print.")
-        lines = [
-            ReceiptLine(
-                f"{index}. {row['student_name']} ({row.get('class_name') or 'No class'})",
-                Decimal("0"),
+        grouped: dict[str, list[dict]] = {}
+        for row in students:
+            grade = str(row["class_name"] or "Not assigned").strip() or "Not assigned"
+            grouped.setdefault(grade, []).append(row)
+
+        def grade_order(label: str):
+            try:
+                return (0, int(label), label.casefold())
+            except ValueError:
+                return (1, 0, label.casefold())
+
+        lines: list[ReceiptLine] = []
+        for grade in sorted(grouped, key=grade_order):
+            members = sorted(grouped[grade], key=lambda row: str(row["student_name"]).casefold())
+            lines.append(ReceiptLine(f"GRADE {grade} — {len(members)}", Decimal("0")))
+            lines.extend(
+                ReceiptLine(f"  {index}. {row['student_name']}", Decimal("0"))
+                for index, row in enumerate(members, start=1)
             )
-            for index, row in enumerate(students, start=1)
-        ]
         self.printing.print_receipt(Receipt(
             "ABSENT STUDENTS TODAY", f"ABS-{today_iso().replace('/', '-')}", today_iso(),
             lines=lines, footer=f"Total absent: {len(students)} | Attendance follow-up",

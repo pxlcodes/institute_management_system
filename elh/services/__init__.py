@@ -1,4 +1,5 @@
 from .attendance import AttendanceService, AttendanceSyncResult, DeviceUserSyncResult
+from .attendance_poller import AttendancePoller
 from .container import ServiceContainer
 from .people import StudentService
 from .printing import PrintingService
@@ -8,4 +9,4 @@ from .certificates import CertificateService
 from .enrollments import EnrollmentService
 from .notifications import NotificationService
 
-__all__ = ["AttendanceService", "AttendanceSyncResult", "DeviceUserSyncResult", "AuthService", "BillingService", "CertificateService", "EnrollmentService", "NotificationService", "PrintingService", "ServiceContainer", "StudentService"]
+__all__ = ["AttendancePoller", "AttendanceService", "AttendanceSyncResult", "DeviceUserSyncResult", "AuthService", "BillingService", "CertificateService", "EnrollmentService", "NotificationService", "PrintingService", "ServiceContainer", "StudentService"]

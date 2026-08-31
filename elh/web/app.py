@@ -1,27 +1,32 @@
-from __future__ import annotations
-
-import secrets
+from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
 import nepali_datetime as nepali
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from elh.config import ROOT_DIR, load_config
-from elh.core.validation import validate_date
+from elh.core.validation import validate_date, validate_month
 from elh.infrastructure import create_database
-from elh.models import Student
+from elh.models import Student, UserSession
 from elh.services.auth import AuthService
 from elh.services.container import ServiceContainer
+from elh.web.security import RateLimiter, SecurityHeadersMiddleware, TokenManager
 
 
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+    confirm_password: str
 
 
 class StudentInput(BaseModel):
@@ -144,6 +149,11 @@ class AttendanceReviewInput(BaseModel):
     follow_up_date: str = ""
 
 
+class PollerConfigInput(BaseModel):
+    enabled: bool | None = None
+    interval_seconds: int | None = None
+
+
 class CompanyProfileInput(BaseModel):
     company_name: str = Field(min_length=1, max_length=255)
     pan_number: str = ""
@@ -184,22 +194,33 @@ class BugReportInput(BaseModel):
 class CalendarEventInput(BaseModel):
     event_name: str = Field(min_length=1, max_length=255)
     event_type: Literal["Holiday", "Closure", "Working Day", "Event"] = "Holiday"
+    course_id: int | None = None
     start_date: str
     end_date: str = ""
     status: Literal["Active", "Inactive"] = "Active"
     remarks: str = ""
 
 
-def create_app() -> FastAPI:
+class BulkWeekendInput(BaseModel):
+    month: str
+    course_id: int | None = None
+    weekend_days: list[Literal["Saturday", "Sunday"]] = ["Saturday", "Sunday"]
+    event_type: Literal["Holiday", "Closure"] = "Holiday"
+    remarks: str = ""
+
+
+def create_app(app_config: AppConfig | None = None) -> FastAPI:
     """Create the web adapter without changing the existing business services."""
-    config = load_config()
+    config = app_config or load_config()
     db = create_database(config)
     services = ServiceContainer.build(config, db)
     auth = AuthService(db, config)
     auth.ensure_initial_users()
-    # Tokens intentionally live only in process memory. A server restart signs users out.
-    sessions: dict[str, object] = {}
+    token_manager = TokenManager(config.secret_key or None)
+    rate_limiter = RateLimiter(max_attempts=5, window_seconds=60, lock_seconds=300)
+
     app = FastAPI(title="ELH Web", version="1.0.0")
+    app.add_middleware(SecurityHeadersMiddleware)
     static_dir = ROOT_DIR / "web"
 
     def records(rows):
@@ -211,12 +232,47 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=422, detail=f"{field_name} must be greater than zero.")
         return amount
 
-    def session(authorization: str | None = Header(default=None)):
-        token = (authorization or "").removeprefix("Bearer ").strip()
-        user = sessions.get(token)
-        if not user:
-            raise HTTPException(status_code=401, detail="Please sign in.")
-        return user
+    def session(
+        authorization: str | None = Header(default=None),
+        x_session_token: str | None = Header(default=None, alias="X-Session-Token"),
+        cookie_session: str | None = Cookie(default=None, alias="elh_session"),
+    ) -> UserSession:
+        raw_token = authorization or x_session_token or cookie_session or ""
+        token = raw_token.removeprefix("Bearer ").strip()
+        if not token:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Please sign in.")
+
+        payload = token_manager.decode_token(token)
+        if not payload:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session expired or invalid. Please sign in.",
+            )
+
+        user_id = payload.get("uid")
+        row = db.query_one("SELECT * FROM app_users WHERE id = ?", (user_id,))
+        if not row or row["status"] != "Active":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User account is inactive or disabled.",
+            )
+
+        locked_until = auth._parse_datetime(row["locked_until"])
+        if locked_until and locked_until > datetime.now():
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User account is temporarily locked.",
+            )
+
+        permissions = auth.permissions_for_user(int(row["id"]), row["role"])
+        return UserSession(
+            user_id=int(row["id"]),
+            username=row["username"],
+            role=row["role"],
+            display_name=row["display_name"] or row["username"],
+            permissions=permissions,
+            must_change_password=bool(row["must_change_password"]),
+        )
 
     def require(permission: str):
         def dependency(user=Depends(session)):
@@ -226,22 +282,114 @@ def create_app() -> FastAPI:
         return dependency
 
     @app.post("/api/auth/login")
-    def login(payload: LoginRequest):
+    def login(payload: LoginRequest, request: Request, response: Response):
+        client_ip = request.client.host if request.client else "127.0.0.1"
+        rate_key = f"{client_ip}:{payload.username.strip().lower()}"
+        is_limited, retry_after = rate_limiter.is_rate_limited(rate_key)
+        if is_limited:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Too many failed login attempts. Please try again in {retry_after} seconds.",
+                headers={"Retry-After": str(retry_after)},
+            )
+
         user = auth.authenticate(payload.username, payload.password)
         if not user:
-            raise HTTPException(status_code=401, detail="Invalid username or password.")
-        token = secrets.token_urlsafe(32)
-        sessions[token] = user
-        return {"token": token, "user": {"username": user.username, "display_name": user.display_name, "role": user.role, "permissions": sorted(user.permissions)}}
+            rate_limiter.record_failure(rate_key)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid username or password.",
+            )
+
+        rate_limiter.record_success(rate_key)
+        token = token_manager.create_token(
+            user.user_id,
+            user.username,
+            user.role,
+            expiry_minutes=config.web_session_expiry_minutes,
+        )
+        response.set_cookie(
+            key="elh_session",
+            value=token,
+            max_age=config.web_session_expiry_minutes * 60,
+            httponly=True,
+            samesite="lax",
+            secure=False,
+        )
+        return {
+            "token": token,
+            "user": {
+                "username": user.username,
+                "display_name": user.display_name,
+                "role": user.role,
+                "permissions": sorted(user.permissions),
+                "must_change_password": user.must_change_password,
+            },
+        }
 
     @app.post("/api/auth/logout")
-    def logout(authorization: str | None = Header(default=None)):
-        sessions.pop((authorization or "").removeprefix("Bearer ").strip(), None)
+    def logout(
+        response: Response,
+        authorization: str | None = Header(default=None),
+        x_session_token: str | None = Header(default=None, alias="X-Session-Token"),
+        cookie_session: str | None = Cookie(default=None, alias="elh_session"),
+    ):
+        raw_token = authorization or x_session_token or cookie_session or ""
+        token = raw_token.removeprefix("Bearer ").strip()
+        if token:
+            token_manager.revoke_token(token)
+        response.delete_cookie(key="elh_session", path="/")
         return {"ok": True}
 
+    @app.post("/api/auth/refresh")
+    def refresh(response: Response, user: UserSession = Depends(session)):
+        new_token = token_manager.create_token(
+            user.user_id,
+            user.username,
+            user.role,
+            expiry_minutes=config.web_session_expiry_minutes,
+        )
+        response.set_cookie(
+            key="elh_session",
+            value=new_token,
+            max_age=config.web_session_expiry_minutes * 60,
+            httponly=True,
+            samesite="lax",
+            secure=False,
+        )
+        return {
+            "token": new_token,
+            "user": {
+                "username": user.username,
+                "display_name": user.display_name,
+                "role": user.role,
+                "permissions": sorted(user.permissions),
+                "must_change_password": user.must_change_password,
+            },
+        }
+
+    @app.post("/api/auth/change-password")
+    def change_password(payload: ChangePasswordRequest, user: UserSession = Depends(session)):
+        if payload.new_password != payload.confirm_password:
+            raise HTTPException(status_code=400, detail="New passwords do not match.")
+        if not auth.verify_user_password(user.user_id, payload.current_password):
+            raise HTTPException(status_code=400, detail="Current password is incorrect.")
+        try:
+            AuthService.validate_password(payload.new_password)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err))
+        auth.update_password(user, user.user_id, payload.new_password, must_change_password=False)
+        return {"ok": True, "message": "Password changed successfully."}
+
     @app.get("/api/auth/me")
-    def me(user=Depends(session)):
-        return {"username": user.username, "display_name": user.display_name, "role": user.role, "permissions": sorted(user.permissions)}
+    def me(user: UserSession = Depends(session)):
+        return {
+            "username": user.username,
+            "display_name": user.display_name,
+            "role": user.role,
+            "permissions": sorted(user.permissions),
+            "must_change_password": user.must_change_password,
+        }
 
     @app.get("/api/dashboard")
     def dashboard(_user=Depends(require("dashboard.view"))):
@@ -426,6 +574,31 @@ def create_app() -> FastAPI:
         services.attendance.record_attendance_alert_review(student_id, payload.status, payload.note, follow_up, user.user_id)
         return {"ok": True}
 
+    @app.get("/api/attendance/poller/status")
+    def attendance_poller_status(_user=Depends(require("devices.manage"))):
+        return services.attendance_poller.status()
+
+    @app.post("/api/attendance/poller/trigger")
+    def attendance_poller_trigger(_user=Depends(require("devices.manage"))):
+        try:
+            result = services.attendance_poller.poll_now()
+            return {
+                "ok": True,
+                "received": result.received,
+                "saved": result.saved,
+                "unmapped": result.unmapped,
+            }
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc))
+
+    @app.post("/api/attendance/poller/config")
+    def attendance_poller_config(payload: PollerConfigInput, _user=Depends(require("devices.manage"))):
+        if payload.interval_seconds is not None:
+            services.attendance_poller.set_interval(payload.interval_seconds)
+        if payload.enabled is not None:
+            services.attendance_poller.set_enabled(payload.enabled)
+        return services.attendance_poller.status()
+
     @app.get("/api/academic-calendar")
     def academic_calendar(month: str = "", _user=Depends(require("devices.manage"))):
         selected_month = month or nepali.date.today().strftime("%Y/%m")
@@ -433,10 +606,18 @@ def create_app() -> FastAPI:
             "month": selected_month,
             "days": services.attendance.academic_calendar_month(selected_month),
             "events": records(db.query(
-                "SELECT * FROM academic_calendar_events WHERE start_date<=? AND end_date>=? ORDER BY start_date,id",
+                "SELECT event.*,c.course_name FROM academic_calendar_events event "
+                "LEFT JOIN courses c ON c.id=event.course_id "
+                "WHERE event.start_date<=? AND event.end_date>=? ORDER BY event.start_date,event.id",
                 (f"{selected_month}/99", f"{selected_month}/01"),
             )),
         }
+
+    @app.get("/api/academic-calendar/courses")
+    def academic_calendar_courses(_user=Depends(require("devices.manage"))):
+        return records(db.query(
+            "SELECT id,course_name,category FROM courses WHERE status='Active' ORDER BY course_name"
+        ))
 
     @app.post("/api/academic-calendar", status_code=201)
     def create_calendar_event(payload: CalendarEventInput, _user=Depends(require("master_data.manage"))):
@@ -444,10 +625,47 @@ def create_app() -> FastAPI:
         end_date = validate_date(payload.end_date, "End date", allow_blank=True, date_format=config.date_format) or start_date
         if end_date < start_date:
             raise HTTPException(status_code=422, detail="End date cannot be before start date.")
+        if payload.course_id is not None and not db.query_one("SELECT id FROM courses WHERE id=?", (payload.course_id,)):
+            raise HTTPException(status_code=422, detail="Selected course was not found.")
         return {"id": db.execute(
-            "INSERT INTO academic_calendar_events (event_name,event_type,start_date,end_date,status,remarks) VALUES (?,?,?,?,?,?)",
-            (payload.event_name.strip(), payload.event_type, start_date, end_date, payload.status, payload.remarks.strip()),
+            "INSERT INTO academic_calendar_events (event_name,event_type,course_id,start_date,end_date,status,remarks) VALUES (?,?,?,?,?,?,?)",
+            (payload.event_name.strip(), payload.event_type, payload.course_id, start_date, end_date, payload.status, payload.remarks.strip()),
         )}
+
+    @app.post("/api/academic-calendar/bulk-weekends", status_code=201)
+    def create_weekend_events(payload: BulkWeekendInput, _user=Depends(require("master_data.manage"))):
+        try:
+            month = validate_month(payload.month, "Calendar month")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not payload.weekend_days:
+            raise HTTPException(status_code=422, detail="Select at least one weekend day.")
+        if payload.course_id is not None and not db.query_one("SELECT id FROM courses WHERE id=?", (payload.course_id,)):
+            raise HTTPException(status_code=422, detail="Selected course was not found.")
+        year, month_number = (int(part) for part in month.split("/"))
+        first = nepali.date(year, month_number, 1)
+        next_month = nepali.date(year + 1, 1, 1) if month_number == 12 else nepali.date(year, month_number + 1, 1)
+        wanted_days = set(payload.weekend_days)
+        created = 0
+        for day in range(1, (next_month - first).days + 1):
+            value = nepali.date(year, month_number, day)
+            weekday = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")[value.to_datetime_date().weekday()]
+            if weekday not in wanted_days:
+                continue
+            business_date = value.strftime("%Y/%m/%d")
+            existing = db.query_one(
+                "SELECT id FROM academic_calendar_events WHERE event_name=? AND event_type=? "
+                "AND start_date=? AND end_date=? AND (course_id=? OR (course_id IS NULL AND ? IS NULL))",
+                (f"Weekend - {weekday}", payload.event_type, business_date, business_date, payload.course_id, payload.course_id),
+            )
+            if existing:
+                continue
+            db.execute(
+                "INSERT INTO academic_calendar_events (event_name,event_type,course_id,start_date,end_date,status,remarks) VALUES (?,?,?,?,?,?,?)",
+                (f"Weekend - {weekday}", payload.event_type, payload.course_id, business_date, business_date, "Active", payload.remarks.strip()),
+            )
+            created += 1
+        return {"created": created, "month": month}
 
     @app.get("/api/bills")
     def bills(_user=Depends(require("billing.manage"))):

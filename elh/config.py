@@ -77,6 +77,8 @@ class AppConfig:
     zkteco_port: int = 4370
     zkteco_password: int = 0
     zkteco_timeout_seconds: int = 10
+    attendance_auto_poll: bool = True
+    attendance_poll_interval_seconds: int = 60
     pos_printer_driver: str = "disabled"
     pos_printer_host: str = ""
     pos_printer_port: int = 9100
@@ -91,6 +93,8 @@ class AppConfig:
     admin_password: str = "Admin@2025"
     maintenance_username: str = "maintenance"
     maintenance_password: str = "Maintenance@2025"
+    secret_key: str = ""
+    web_session_expiry_minutes: int = 1440
 
     def public_values(self) -> dict[str, str]:
         """Serializable values suitable for an admin/configuration API."""
@@ -179,6 +183,8 @@ def load_config(
         zkteco_port=int(get("ZKTECO_PORT", AppConfig.zkteco_port)),
         zkteco_password=int(get("ZKTECO_PASSWORD", AppConfig.zkteco_password)),
         zkteco_timeout_seconds=int(get("ZKTECO_TIMEOUT_SECONDS", AppConfig.zkteco_timeout_seconds)),
+        attendance_auto_poll=_bool(get("ATTENDANCE_AUTO_POLL", "true")),
+        attendance_poll_interval_seconds=max(5, int(get("ATTENDANCE_POLL_INTERVAL_SECONDS", AppConfig.attendance_poll_interval_seconds))),
         pos_printer_driver=get("POS_PRINTER_DRIVER", AppConfig.pos_printer_driver).lower(),
         pos_printer_host=get("POS_PRINTER_HOST", AppConfig.pos_printer_host),
         pos_printer_port=int(get("POS_PRINTER_PORT", AppConfig.pos_printer_port)),
@@ -193,6 +199,8 @@ def load_config(
         admin_password=get("ADMIN_PASSWORD", AppConfig.admin_password),
         maintenance_username=get("MAINTENANCE_USERNAME", AppConfig.maintenance_username),
         maintenance_password=get("MAINTENANCE_PASSWORD", AppConfig.maintenance_password),
+        secret_key=get("SECRET_KEY", AppConfig.secret_key),
+        web_session_expiry_minutes=max(1, int(get("WEB_SESSION_EXPIRY_MINUTES", AppConfig.web_session_expiry_minutes))),
     )
 
 
@@ -230,6 +238,8 @@ EDITABLE_ENV_KEYS = {
     "zkteco_port": "ELH_ZKTECO_PORT",
     "zkteco_password": "ELH_ZKTECO_PASSWORD",
     "zkteco_timeout_seconds": "ELH_ZKTECO_TIMEOUT_SECONDS",
+    "attendance_auto_poll": "ELH_ATTENDANCE_AUTO_POLL",
+    "attendance_poll_interval_seconds": "ELH_ATTENDANCE_POLL_INTERVAL_SECONDS",
     "pos_printer_driver": "ELH_POS_PRINTER_DRIVER",
     "pos_printer_host": "ELH_POS_PRINTER_HOST",
     "pos_printer_port": "ELH_POS_PRINTER_PORT",
@@ -244,6 +254,8 @@ EDITABLE_ENV_KEYS = {
     "admin_password": "ELH_ADMIN_PASSWORD",
     "maintenance_username": "ELH_MAINTENANCE_USERNAME",
     "maintenance_password": "ELH_MAINTENANCE_PASSWORD",
+    "secret_key": "ELH_SECRET_KEY",
+    "web_session_expiry_minutes": "ELH_WEB_SESSION_EXPIRY_MINUTES",
 }
 
 # Infrastructure and secrets must remain outside the institution database.  The
@@ -257,9 +269,11 @@ ENVIRONMENT_ONLY_KEYS = {
     "certificate_template_path", "certificate_output_directory",
     "certificate_pdf_background_path", "date_format", "seed_demo_data",
     "attendance_driver", "zkteco_host", "zkteco_port", "zkteco_password",
-    "zkteco_timeout_seconds", "pos_printer_driver", "pos_printer_host",
+    "zkteco_timeout_seconds", "attendance_auto_poll", "attendance_poll_interval_seconds",
+    "pos_printer_driver", "pos_printer_host",
     "pos_printer_port", "pos_printer_chars_per_line", "aakash_sms_token",
     "aakash_sms_endpoint", "sparrow_sms_token", "sparrow_sms_endpoint",
+    "secret_key", "web_session_expiry_minutes",
 }
 
 

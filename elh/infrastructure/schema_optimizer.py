@@ -42,7 +42,9 @@ ROUTINE_PLAN_VERSION = 14
 ROUTINE_PLAN_NAME = "version academic routines with effective dates"
 ACADEMIC_CALENDAR_VERSION = 15
 ACADEMIC_CALENDAR_NAME = "add academic calendar closures and working-day events"
-LATEST_SCHEMA_VERSION = ACADEMIC_CALENDAR_VERSION
+ACADEMIC_CALENDAR_COURSE_VERSION = 16
+ACADEMIC_CALENDAR_COURSE_NAME = "allow calendar events to apply to a specific course"
+LATEST_SCHEMA_VERSION = ACADEMIC_CALENDAR_COURSE_VERSION
 
 
 INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
@@ -83,6 +85,7 @@ INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("class_routines", "idx_routines_plan_day", ("routine_plan_id", "day_of_week", "status")),
     ("routine_plans", "idx_routine_plans_status_dates", ("status", "effective_from", "effective_to")),
     ("academic_calendar_events", "idx_calendar_event_dates", ("start_date", "end_date", "status")),
+    ("academic_calendar_events", "idx_calendar_event_course_dates", ("course_id", "start_date", "end_date")),
     ("students", "idx_students_class_level", ("class_level_id", "status")),
     ("due_bills", "idx_due_bills_status_due", ("status", "due_date")),
     ("due_bills", "idx_due_bills_issue", ("issue_date",)),
@@ -588,7 +591,7 @@ def ensure_mysql_academic_calendar_migration(db) -> None:
     db.execute(
         "CREATE TABLE IF NOT EXISTS academic_calendar_events ("
         "id INTEGER AUTO_INCREMENT PRIMARY KEY,event_name VARCHAR(255) NOT NULL,"
-        "event_type VARCHAR(30) NOT NULL,start_date VARCHAR(10) NOT NULL,end_date VARCHAR(10) NOT NULL,"
+        "event_type VARCHAR(30) NOT NULL,course_id INTEGER NULL,start_date VARCHAR(10) NOT NULL,end_date VARCHAR(10) NOT NULL,"
         "status VARCHAR(30) NOT NULL DEFAULT 'Active',remarks TEXT,"
         "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB"
     )
@@ -596,6 +599,13 @@ def ensure_mysql_academic_calendar_migration(db) -> None:
         db.execute(
             "INSERT INTO schema_migrations (version,migration_name) VALUES (?,?)",
             (ACADEMIC_CALENDAR_VERSION, ACADEMIC_CALENDAR_NAME),
+        )
+    if not _mysql_column_exists(db, "academic_calendar_events", "course_id"):
+        db.execute("ALTER TABLE academic_calendar_events ADD COLUMN course_id INTEGER NULL")
+    if not db.query_one("SELECT version FROM schema_migrations WHERE version=?", (ACADEMIC_CALENDAR_COURSE_VERSION,)):
+        db.execute(
+            "INSERT INTO schema_migrations (version,migration_name) VALUES (?,?)",
+            (ACADEMIC_CALENDAR_COURSE_VERSION, ACADEMIC_CALENDAR_COURSE_NAME),
         )
 
 
@@ -792,7 +802,7 @@ def normalize_sqlite_schema(path) -> None:
             );
             CREATE TABLE IF NOT EXISTS academic_calendar_events (
               id INTEGER PRIMARY KEY AUTOINCREMENT,event_name TEXT NOT NULL,event_type TEXT NOT NULL,
-              start_date TEXT NOT NULL,end_date TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'Active',
+              course_id INTEGER,start_date TEXT NOT NULL,end_date TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'Active',
               remarks TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             """
@@ -805,6 +815,8 @@ def normalize_sqlite_schema(path) -> None:
             connection.execute("ALTER TABLE class_routines ADD COLUMN class_level_id INTEGER")
         if "routine_plan_id" not in _sqlite_columns(connection, "class_routines"):
             connection.execute("ALTER TABLE class_routines ADD COLUMN routine_plan_id INTEGER")
+        if "course_id" not in _sqlite_columns(connection, "academic_calendar_events"):
+            connection.execute("ALTER TABLE academic_calendar_events ADD COLUMN course_id INTEGER")
         for table in ("students", "class_routines"):
             if "grade_id" not in _sqlite_columns(connection, table):
                 connection.execute(f"ALTER TABLE {table} ADD COLUMN grade_id INTEGER")
@@ -953,6 +965,7 @@ def normalize_sqlite_schema(path) -> None:
         connection.execute("INSERT OR IGNORE INTO schema_migrations (version,migration_name) VALUES (?,?)", (GRADE_VERSION, GRADE_NAME))
         connection.execute("INSERT OR IGNORE INTO schema_migrations (version,migration_name) VALUES (?,?)", (ROUTINE_PLAN_VERSION, ROUTINE_PLAN_NAME))
         connection.execute("INSERT OR IGNORE INTO schema_migrations (version,migration_name) VALUES (?,?)", (ACADEMIC_CALENDAR_VERSION, ACADEMIC_CALENDAR_NAME))
+        connection.execute("INSERT OR IGNORE INTO schema_migrations (version,migration_name) VALUES (?,?)", (ACADEMIC_CALENDAR_COURSE_VERSION, ACADEMIC_CALENDAR_COURSE_NAME))
         connection.commit()
     except Exception:
         connection.rollback()

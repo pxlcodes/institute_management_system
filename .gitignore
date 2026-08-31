@@ -2,6 +2,8 @@
 .env.admin.tmp
 .env.*
 !.env.example
+.secret_key
+*.secret
 backups/
 logs/
 output/
@@ -9,6 +11,8 @@ tmp/
 *.db
 *.sqlite
 *.sqlite3
+*.sql
+*.sha256
 *.log
 *.pem
 *.key
@@ -21,5 +25,9 @@ build/
 dist/
 release/
 .build-venv/
+.pytest_cache/
+.coverage
+htmlcov/
 *.spec
 !packaging/*.spec
+

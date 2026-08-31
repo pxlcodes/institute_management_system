@@ -144,7 +144,7 @@ class ServiceTests(unittest.TestCase):
             )
             self.assertEqual(
                 int(db.query_one("SELECT MAX(version) version FROM schema_migrations")["version"]),
-                15,
+                16,
             )
             self.assertIsNotNone(
                 db.query_one(
@@ -152,6 +152,10 @@ class ServiceTests(unittest.TestCase):
                     "AND name='academic_calendar_events'"
                 )
             )
+            calendar_columns = {
+                row["name"] for row in db.query("PRAGMA table_info(academic_calendar_events)")
+            }
+            self.assertIn("course_id", calendar_columns)
             certificate_columns = {
                 row["name"] for row in db.query("PRAGMA table_info(course_certificates)")
             }

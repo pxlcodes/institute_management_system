@@ -6,6 +6,7 @@ from elh.config import AppConfig
 from elh.hardware.factory import create_attendance_device, create_receipt_printer
 from elh.repositories import AttendanceRepository, StudentRepository
 from .attendance import AttendanceService
+from .attendance_poller import AttendancePoller
 from .people import StudentService
 from .printing import PrintingService
 from .billing import BillingService
@@ -25,6 +26,7 @@ class ServiceContainer:
     enrollments: EnrollmentService
     notifications: NotificationService
     attendance: AttendanceService
+    attendance_poller: AttendancePoller
     printing: PrintingService
     billing: BillingService
     reports: ReportsService
@@ -84,18 +86,27 @@ class ServiceContainer:
         company_name = (profile["company_name"] if profile else None) or config.app_title
         currency_symbol = settings.get("currency_symbol", config.currency_symbol)
         notifications = NotificationService(db, config)
-        printing=PrintingService(create_receipt_printer(config))
+        printing = PrintingService(create_receipt_printer(config))
+        attendance_service = AttendanceService(AttendanceRepository(db), create_attendance_device(config), settings)
+        attendance_poller = AttendancePoller(
+            attendance_service,
+            interval_seconds=config.attendance_poll_interval_seconds,
+            enabled=config.attendance_auto_poll and config.attendance_driver != "disabled",
+        )
         container = cls(
             students=StudentService(StudentRepository(db), config.date_format, notifications),
             enrollments=EnrollmentService(db, notifications, config.date_format),
             notifications=notifications,
-            attendance=AttendanceService(AttendanceRepository(db), create_attendance_device(config), settings),
+            attendance=attendance_service,
+            attendance_poller=attendance_poller,
             printing=printing,
-            billing=BillingService(BillingRepository(db),printing,company_name,currency_symbol,notifications),
-            reports=ReportsService(db,company_name,currency_symbol,printing),
-            certificates=CertificateService(CertificateRepository(db),config,notifications),
+            billing=BillingService(BillingRepository(db), printing, company_name, currency_symbol, notifications),
+            reports=ReportsService(db, company_name, currency_symbol, printing),
+            certificates=CertificateService(CertificateRepository(db), config, notifications),
             staff_finance=StaffFinanceService(db),
         )
         if settings.get_bool("sms_enabled", False):
             notifications.dispatch_async()
+        if config.attendance_driver != "disabled" and config.attendance_auto_poll:
+            attendance_poller.start()
         return container

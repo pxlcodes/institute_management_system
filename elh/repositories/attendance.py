@@ -307,7 +307,8 @@ class AttendanceRepository:
         return self.db.query(
             """
             SELECT s.id,s.student_name,s.class_name,s.contact,s.parent_name,
-                   GROUP_CONCAT(DISTINCT c.course_name) courses,MIN(e.start_date) enrollment_start,
+                   GROUP_CONCAT(DISTINCT c.course_name) courses,GROUP_CONCAT(DISTINCT e.course_id) course_ids,
+                   MIN(e.start_date) enrollment_start,
                    MAX(previous_log.occurred_at) last_seen,
                    CASE WHEN EXISTS (
                      SELECT 1 FROM device_user_mappings mapping
