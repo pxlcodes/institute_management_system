@@ -2163,6 +2163,39 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 
+    @app.get("/api/bills/consolidated-statement")
+    def get_consolidated_statement_pdf(
+        bill_ids: str = Query("", description="Comma separated bill IDs"),
+        student_id: int | None = Query(None),
+        _user=Depends(require("billing.manage")),
+    ):
+        try:
+            b_ids = [int(v.strip()) for v in bill_ids.split(",") if v.strip().isdigit()]
+            if b_ids:
+                bills = [services.billing.repository.get(bid) for bid in b_ids]
+                bills = [b for b in bills if b]
+                pdf_path = services.billing.create_consolidated_statement_pdf(bills=bills)
+            elif student_id:
+                pdf_path = services.billing.create_consolidated_statement_pdf(student_id=student_id)
+            else:
+                raise HTTPException(status_code=400, detail="Provide bill_ids or student_id.")
+            return FileResponse(str(pdf_path), media_type="application/pdf", filename=pdf_path.name)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @app.get("/api/bills/{bill_id}/pdf")
+    def get_bill_pdf(bill_id: int, _user=Depends(require("billing.manage"))):
+        bill = services.billing.repository.get(bill_id)
+        if not bill:
+            raise HTTPException(status_code=404, detail="Bill not found.")
+        try:
+            pdf_path = Path(bill.pdf_path) if bill.pdf_path and Path(bill.pdf_path).exists() else services.billing.create_pdf(bill)
+            return FileResponse(str(pdf_path), media_type="application/pdf", filename=pdf_path.name)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
     @app.post("/api/bills/pay-multiple")
     def pay_multiple_bills(payload: MultiBillPaymentInput, _user=Depends(require("billing.manage"))):
         validate_date(payload.payment_date, "Payment date", date_format=config.date_format)

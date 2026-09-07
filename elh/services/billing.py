@@ -132,6 +132,46 @@ class BillingService:
             periods.append(f"{year:04d}/{month:02d}");month+=1
             if month==13:year+=1;month=1
         return periods
+    def get_bill_arrears(self, bill) -> tuple[list[dict], Decimal, Decimal]:
+        if not hasattr(self.repository, "get_unpaid_bills_for_student"):
+            return [], Decimal("0"), max(Decimal("0"), bill.total_amount - bill.paid_amount)
+
+        show_arrears = True
+        if getattr(self, "settings", None):
+            show_arrears = self.settings.get_bool("billing_show_arrears_on_due_bills", True)
+        if not show_arrears:
+            return [], Decimal("0"), max(Decimal("0"), bill.total_amount - bill.paid_amount)
+
+        try:
+            older_bills = self.repository.get_unpaid_bills_for_student(
+                student_id=bill.student_id,
+                exclude_bill_id=bill.id,
+                before_date=bill.issue_date,
+                before_bill_id=bill.id,
+            )
+        except Exception:
+            return [], Decimal("0"), max(Decimal("0"), bill.total_amount - bill.paid_amount)
+
+        arrears = []
+        total_arrears = Decimal("0")
+        for ob in older_bills:
+            rem = max(Decimal("0"), ob.total_amount - ob.paid_amount)
+            if rem > 0:
+                arrears.append({
+                    "bill_id": ob.id,
+                    "bill_number": ob.bill_number,
+                    "billing_period": ob.billing_period,
+                    "course_name": ob.course_name,
+                    "total_amount": ob.total_amount,
+                    "paid_amount": ob.paid_amount,
+                    "balance": rem,
+                })
+                total_arrears += rem
+
+        current_balance = max(Decimal("0"), bill.total_amount - bill.paid_amount)
+        grand_total = current_balance + total_arrears
+        return arrears, total_arrears, grand_total
+
     def create_pdf(self,bill,output:Path|None=None)->Path:
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import A4
@@ -146,29 +186,61 @@ class BillingService:
         story=[Paragraph(self.app_title,styles["Title"]),Paragraph("STUDENT DUE BILL",styles["Heading2"]),Spacer(1,6*mm)]
         details=[["Bill Number",bill.bill_number,"Billing Period",bill.billing_period],["Student",bill.student_name,"Course",bill.course_name],["Issue Date",bill.issue_date,"Due Date",bill.due_date],["Status",bill.status,"",""]]
         table=Table(details,colWidths=[30*mm,58*mm,30*mm,55*mm]);table.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.5,colors.grey),("BACKGROUND",(0,0),(0,-1),colors.HexColor("#EAF0F6")),("BACKGROUND",(2,0),(2,-1),colors.HexColor("#EAF0F6")),("VALIGN",(0,0),(-1,-1),"MIDDLE"),("PADDING",(0,0),(-1,-1),6)]));story.extend([table,Spacer(1,7*mm)])
-        amount_rows=[["Description","Amount"],[f"Course fee - {bill.course_name}",f"{self.currency_symbol} {bill.subtotal:,.2f}"]]
-        if bill.discount>0:amount_rows.append(["Discount",f"- {self.currency_symbol} {bill.discount:,.2f}"])
-        amount_rows.append(["TOTAL DUE",f"{self.currency_symbol} {bill.total_amount:,.2f}"])
+
+        arrears, total_arrears, grand_total = self.get_bill_arrears(bill)
+        payable_amount = grand_total if arrears else bill.total_amount
+
+        amount_rows = [["Description", "Amount"]]
+        amount_rows.append([f"Course fee - {bill.course_name} ({bill.billing_period})", f"{self.currency_symbol} {bill.subtotal:,.2f}"])
+        if bill.discount > 0:
+            amount_rows.append(["Discount", f"- {self.currency_symbol} {bill.discount:,.2f}"])
+        if arrears:
+            amount_rows.append([f"Current Bill Due ({bill.billing_period})", f"{self.currency_symbol} {bill.total_amount:,.2f}"])
+            for arr in arrears:
+                amount_rows.append([
+                    f"Previous Overdue ({arr['billing_period']}) - {arr['bill_number']}",
+                    f"{self.currency_symbol} {arr['balance']:,.2f}",
+                ])
+            amount_rows.append(["TOTAL PREVIOUS ARREARS", f"{self.currency_symbol} {total_arrears:,.2f}"])
+            amount_rows.append(["GRAND TOTAL OUTSTANDING DUE", f"{self.currency_symbol} {grand_total:,.2f}"])
+        else:
+            amount_rows.append(["TOTAL DUE", f"{self.currency_symbol} {bill.total_amount:,.2f}"])
 
         qr_data = PaymentQrEngine.from_settings(
             getattr(self, "settings", None),
-            bill.total_amount,
+            payable_amount,
             bill.bill_number,
             bill.student_name,
             bill.course_name,
         )
-        show_qr = qr_data and (not getattr(self, "settings", None) or self.settings.get_bool("payment_qr_show_on_due_bills", True)) and bill.total_amount > 0
+        show_qr = qr_data and (not getattr(self, "settings", None) or self.settings.get_bool("payment_qr_show_on_due_bills", True)) and payable_amount > 0
+
+        amounts_style = [
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#263B50")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+            ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+            ("PADDING", (0, 0), (-1, -1), 6),
+        ]
+        if arrears:
+            amounts_style.extend([
+                ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#FEF3C7")),
+                ("TEXTCOLOR", (0, -1), (-1, -1), colors.HexColor("#92400E")),
+                ("LINEABOVE", (0, -1), (-1, -1), 1.2, colors.HexColor("#D97706")),
+            ])
 
         if show_qr:
             amounts = Table(amount_rows, colWidths=[70 * mm, 38 * mm])
-            amounts.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.5,colors.grey),("BACKGROUND",(0,0),(-1,0),colors.HexColor("#263B50")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("ALIGN",(1,1),(-1,-1),"RIGHT"),("FONTNAME",(0,-1),(-1,-1),"Helvetica-Bold"),("PADDING",(0,0),(-1,-1),6)]))
+            amounts.setStyle(TableStyle(amounts_style))
 
             qr_drawing = PaymentQrEngine.build_reportlab_flowable(qr_data, size_mm=35.0)
             qr_caption_style = ParagraphStyle("QrCaption", parent=styles["BodyText"], fontSize=8, leading=10, alignment=1, textColor=colors.HexColor("#102A43"))
             qr_sub_style = ParagraphStyle("QrSub", parent=styles["BodyText"], fontSize=7, leading=9, alignment=1, textColor=colors.HexColor("#64748B"))
 
+            caption_label = f"<b>📱 Scan to Pay Grand Total ({qr_data.provider})</b>" if arrears else f"<b>📱 Scan to Pay ({qr_data.provider})</b>"
             qr_content = [
-                Paragraph(f"<b>📱 Scan to Pay ({qr_data.provider})</b>", qr_caption_style),
+                Paragraph(caption_label, qr_caption_style),
                 Spacer(1, 1.5 * mm),
                 qr_drawing,
                 Spacer(1, 1.5 * mm),
@@ -186,10 +258,12 @@ class BillingService:
             story.extend([combo_table, Spacer(1, 12 * mm)])
         else:
             amounts=Table(amount_rows,colWidths=[125*mm,48*mm])
-            amounts.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.5,colors.grey),("BACKGROUND",(0,0),(-1,0),colors.HexColor("#263B50")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("ALIGN",(1,1),(-1,-1),"RIGHT"),("FONTNAME",(0,-1),(-1,-1),"Helvetica-Bold"),("PADDING",(0,0),(-1,-1),7)]));story.extend([amounts,Spacer(1,14*mm)])
+            amounts.setStyle(TableStyle(amounts_style))
+            story.extend([amounts,Spacer(1,14*mm)])
 
         story.extend([Paragraph("Please pay by the due date. Keep this bill for your records.",styles["BodyText"]),Spacer(1,12*mm),Paragraph("Authorized Signature: ______________________________",styles["BodyText"])]);doc.build(story)
         self.repository.set_pdf(bill.id,str(output));return output
+
     def create_batch_pdf(self,bills:list,output:Path|None=None)->Path:
         if not bills:raise ValueError("Select at least one bill.")
         from reportlab.lib import colors
@@ -213,22 +287,54 @@ class BillingService:
             bill_story=[Paragraph(self.app_title,compact_title),Paragraph("STUDENT DUE BILL",compact_heading),Spacer(1,3*mm)]
             details=[["Bill Number",bill.bill_number,"Billing Period",bill.billing_period],["Student",bill.student_name,"Course",bill.course_name],["Issue Date",bill.issue_date,"Due Date",bill.due_date],["Status",bill.status,"",""]]
             info=Table(details,colWidths=[27*mm,61*mm,27*mm,58*mm],hAlign="CENTER");info.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.5,colors.grey),("BACKGROUND",(0,0),(0,-1),colors.HexColor("#EAF0F6")),("BACKGROUND",(2,0),(2,-1),colors.HexColor("#EAF0F6")),("VALIGN",(0,0),(-1,-1),"MIDDLE"),("FONTSIZE",(0,0),(-1,-1),9),("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5)]));bill_story.extend([info,Spacer(1,4*mm)])
-            amount_rows=[["Description","Amount"],[f"Course fee - {bill.course_name}",f"{self.currency_symbol} {bill.subtotal:,.2f}"]]
-            if bill.discount>0:amount_rows.append(["Discount",f"- {self.currency_symbol} {bill.discount:,.2f}"])
-            amount_rows.append(["TOTAL DUE",f"{self.currency_symbol} {bill.total_amount:,.2f}"])
+
+            arrears, total_arrears, grand_total = self.get_bill_arrears(bill)
+            payable_amount = grand_total if arrears else bill.total_amount
+
+            amount_rows = [["Description", "Amount"]]
+            amount_rows.append([f"Course fee - {bill.course_name} ({bill.billing_period})", f"{self.currency_symbol} {bill.subtotal:,.2f}"])
+            if bill.discount > 0:
+                amount_rows.append(["Discount", f"- {self.currency_symbol} {bill.discount:,.2f}"])
+            if arrears:
+                amount_rows.append([f"Current Due ({bill.billing_period})", f"{self.currency_symbol} {bill.total_amount:,.2f}"])
+                for arr in arrears:
+                    amount_rows.append([
+                        f"Overdue ({arr['billing_period']})",
+                        f"{self.currency_symbol} {arr['balance']:,.2f}",
+                    ])
+                amount_rows.append(["GRAND TOTAL DUE", f"{self.currency_symbol} {grand_total:,.2f}"])
+            else:
+                amount_rows.append(["TOTAL DUE", f"{self.currency_symbol} {bill.total_amount:,.2f}"])
 
             qr_data = PaymentQrEngine.from_settings(
                 getattr(self, "settings", None),
-                bill.total_amount,
+                payable_amount,
                 bill.bill_number,
                 bill.student_name,
                 bill.course_name,
             )
-            show_qr = qr_data and (not getattr(self, "settings", None) or self.settings.get_bool("payment_qr_show_on_due_bills", True)) and bill.total_amount > 0
+            show_qr = qr_data and (not getattr(self, "settings", None) or self.settings.get_bool("payment_qr_show_on_due_bills", True)) and payable_amount > 0
+
+            b_amounts_style = [
+                ("GRID",(0,0),(-1,-1),0.5,colors.grey),
+                ("BACKGROUND",(0,0),(-1,0),colors.HexColor("#263B50")),
+                ("TEXTCOLOR",(0,0),(-1,0),colors.white),
+                ("ALIGN",(1,1),(-1,-1),"RIGHT"),
+                ("FONTNAME",(0,-1),(-1,-1),"Helvetica-Bold"),
+                ("FONTSIZE",(0,0),(-1,-1),9),
+                ("TOPPADDING",(0,0),(-1,-1),4),
+                ("BOTTOMPADDING",(0,0),(-1,-1),4),
+            ]
+            if arrears:
+                b_amounts_style.extend([
+                    ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#FEF3C7")),
+                    ("TEXTCOLOR", (0, -1), (-1, -1), colors.HexColor("#92400E")),
+                    ("LINEABOVE", (0, -1), (-1, -1), 1.0, colors.HexColor("#D97706")),
+                ])
 
             if show_qr:
                 amounts = Table(amount_rows, colWidths=[65 * mm, 38 * mm], hAlign="CENTER")
-                amounts.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.5,colors.grey),("BACKGROUND",(0,0),(-1,0),colors.HexColor("#263B50")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("ALIGN",(1,1),(-1,-1),"RIGHT"),("FONTNAME",(0,-1),(-1,-1),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,-1),9),("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4)]))
+                amounts.setStyle(TableStyle(b_amounts_style))
                 qr_drawing = PaymentQrEngine.build_reportlab_flowable(qr_data, size_mm=30.0)
                 qr_cell = [
                     Paragraph(f"<b>Pay ({qr_data.provider})</b>", qr_caption_style),
@@ -245,7 +351,7 @@ class BillingService:
                 ]))
                 bill_story.extend([combo, Spacer(1, 4 * mm)])
             else:
-                amounts=Table(amount_rows,colWidths=[125*mm,48*mm],hAlign="CENTER");amounts.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.5,colors.grey),("BACKGROUND",(0,0),(-1,0),colors.HexColor("#263B50")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("ALIGN",(1,1),(-1,-1),"RIGHT"),("FONTNAME",(0,-1),(-1,-1),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,-1),9),("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5)]));bill_story.extend([amounts,Spacer(1,5*mm)])
+                amounts=Table(amount_rows,colWidths=[125*mm,48*mm],hAlign="CENTER");amounts.setStyle(TableStyle(b_amounts_style));bill_story.extend([amounts,Spacer(1,5*mm)])
 
             bill_story.extend([Paragraph("Please pay by the due date. Keep this bill for your records.",compact_body),Spacer(1,5*mm),Paragraph("Authorized Signature:  ______________________________",signature_style),Spacer(1,3*mm)])
             story.append(KeepTogether(bill_story))
@@ -257,24 +363,215 @@ class BillingService:
         for bill in bills:self.print_pos(bill)
     def print_pos(self,bill):
         from elh.core.payment_qr import PaymentQrEngine
+        arrears, total_arrears, grand_total = self.get_bill_arrears(bill)
+        payable_amount = grand_total if arrears else bill.total_amount
+
         lines=[ReceiptLine(f"{bill.course_name} ({bill.billing_period})",bill.subtotal)]
         if bill.discount>0:lines.append(ReceiptLine("Discount",-bill.discount))
+        if arrears:
+            for arr in arrears:
+                lines.append(ReceiptLine(f"Arrears ({arr['billing_period']})", arr["balance"]))
 
         qr_data = PaymentQrEngine.from_settings(
             getattr(self, "settings", None),
-            bill.total_amount,
+            payable_amount,
             bill.bill_number,
             bill.student_name,
             bill.course_name,
         )
-        qr_payload = PaymentQrEngine.build_payload(qr_data) if (qr_data and bill.total_amount > 0) else ""
-        qr_caption = f"Scan to Pay ({qr_data.provider})" if qr_data else ""
+        qr_payload = PaymentQrEngine.build_payload(qr_data) if (qr_data and payable_amount > 0) else ""
+        qr_caption = f"Scan to Pay Grand Total ({qr_data.provider})" if (qr_data and arrears) else (f"Scan to Pay ({qr_data.provider})" if qr_data else "")
 
         receipt=Receipt(
             "ELH DUE BILL",bill.bill_number,bill.issue_date,bill.student_name,lines,f"DUE BY: {bill.due_date}",
             qr_payload=qr_payload,qr_caption=qr_caption,
         )
         self.printing.print_receipt(receipt);self.repository.mark_pos_printed(bill.id)
+
+    def create_consolidated_statement_pdf(
+        self,
+        bills: list | None = None,
+        student_id: int | None = None,
+        output: Path | None = None,
+    ) -> Path:
+        if not bills and not student_id:
+            raise ValueError("Provide either a list of bills or a student ID.")
+
+        if not bills and student_id:
+            if hasattr(self.repository, "get_unpaid_bills_for_student"):
+                bills = self.repository.get_unpaid_bills_for_student(student_id)
+            else:
+                bills = [b for b in self.repository.list() if b.student_id == student_id and b.total_amount > b.paid_amount]
+
+        if not bills:
+            raise ValueError("No bills found to generate a consolidated statement.")
+
+        student_names = {b.student_name for b in bills}
+        if len(student_names) > 1:
+            raise ValueError(f"All bills in a statement must belong to the same student. Found: {', '.join(student_names)}")
+
+        bills = sorted(bills, key=lambda b: (b.issue_date, b.id))
+        target_student_id = bills[0].student_id
+        student_name = bills[0].student_name
+        courses = list(dict.fromkeys(b.course_name for b in bills))
+        courses_str = ", ".join(courses)
+
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import mm
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+        from elh.core.payment_qr import PaymentQrEngine
+
+        safe_name = student_name.replace(" ", "_").replace("/", "-").replace("\\", "-")
+        safe_date = bills[-1].issue_date.replace("/", "-")
+        output = output or ROOT_DIR / "output" / "pdf" / f"statement_{safe_name}_{safe_date}.pdf"
+        output.parent.mkdir(parents=True, exist_ok=True)
+
+        styles = getSampleStyleSheet()
+        doc = SimpleDocTemplate(
+            str(output),
+            pagesize=A4,
+            rightMargin=16 * mm,
+            leftMargin=16 * mm,
+            topMargin=14 * mm,
+            bottomMargin=14 * mm,
+        )
+
+        title_style = ParagraphStyle(
+            "StmtTitle",
+            parent=styles["Title"],
+            fontSize=20,
+            leading=24,
+            textColor=colors.HexColor("#0F172A"),
+            alignment=1,
+            spaceAfter=2,
+        )
+        sub_style = ParagraphStyle(
+            "StmtSub",
+            parent=styles["Heading2"],
+            fontSize=13,
+            leading=16,
+            textColor=colors.HexColor("#0284C7"),
+            alignment=1,
+            spaceAfter=6,
+        )
+        normal_style = styles["BodyText"]
+
+        story = [
+            Paragraph(self.app_title, title_style),
+            Paragraph("STUDENT FEE DUE STATEMENT / CONSOLIDATED BILL", sub_style),
+            Spacer(1, 4 * mm),
+        ]
+
+        total_original = sum(b.total_amount for b in bills)
+        total_paid = sum(b.paid_amount for b in bills)
+        total_outstanding = sum(max(Decimal("0"), b.total_amount - b.paid_amount) for b in bills)
+
+        meta_data = [
+            ["Student Name", student_name, "Student ID", f"#{target_student_id}"],
+            ["Course(s)", courses_str, "Unpaid Months", f"{len(bills)} bill(s)"],
+            ["Statement Date", bills[-1].issue_date, "Total Dues", f"{self.currency_symbol} {total_outstanding:,.2f}"],
+        ]
+        meta_table = Table(meta_data, colWidths=[32 * mm, 60 * mm, 32 * mm, 54 * mm])
+        meta_table.setStyle(TableStyle([
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+            ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#F1F5F9")),
+            ("BACKGROUND", (2, 0), (2, -1), colors.HexColor("#F1F5F9")),
+            ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+            ("FONTNAME", (2, 0), (2, -1), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("PADDING", (0, 0), (-1, -1), 5),
+        ]))
+        story.extend([meta_table, Spacer(1, 6 * mm)])
+
+        table_rows = [["Bill No.", "Period", "Course", "Total Bill", "Paid", "Balance Due"]]
+        for b in bills:
+            bal = max(Decimal("0"), b.total_amount - b.paid_amount)
+            table_rows.append([
+                b.bill_number,
+                b.billing_period,
+                b.course_name,
+                f"{self.currency_symbol} {b.total_amount:,.2f}",
+                f"{self.currency_symbol} {b.paid_amount:,.2f}",
+                f"{self.currency_symbol} {bal:,.2f}",
+            ])
+
+        table_rows.append([
+            "TOTAL OUTSTANDING BALANCE", "", "",
+            f"{self.currency_symbol} {total_original:,.2f}",
+            f"{self.currency_symbol} {total_paid:,.2f}",
+            f"{self.currency_symbol} {total_outstanding:,.2f}",
+        ])
+
+        col_w = [40 * mm, 24 * mm, 44 * mm, 24 * mm, 22 * mm, 24 * mm]
+        tbl = Table(table_rows, colWidths=col_w)
+        tbl.setStyle(TableStyle([
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#94A3B8")),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E293B")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("ALIGN", (3, 0), (-1, -1), "RIGHT"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("PADDING", (0, 0), (-1, -1), 5),
+            ("SPAN", (0, -1), (2, -1)),
+            ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#FEF3C7")),
+            ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+            ("TEXTCOLOR", (0, -1), (-1, -1), colors.HexColor("#92400E")),
+            ("LINEABOVE", (0, -1), (-1, -1), 1.5, colors.HexColor("#D97706")),
+        ]))
+
+        qr_data = PaymentQrEngine.from_settings(
+            getattr(self, "settings", None),
+            total_outstanding,
+            f"STMT-{target_student_id}",
+            student_name,
+            courses_str,
+        )
+        show_qr = qr_data and (not getattr(self, "settings", None) or self.settings.get_bool("payment_qr_show_on_due_bills", True)) and total_outstanding > 0
+
+        if show_qr:
+            qr_drawing = PaymentQrEngine.build_reportlab_flowable(qr_data, size_mm=34.0)
+            qr_caption_style = ParagraphStyle("QrCaption", parent=normal_style, fontSize=8, leading=10, alignment=1, textColor=colors.HexColor("#102A43"))
+            qr_sub_style = ParagraphStyle("QrSub", parent=normal_style, fontSize=7, leading=9, alignment=1, textColor=colors.HexColor("#64748B"))
+
+            qr_content = [
+                Paragraph(f"<b>📱 Scan to Settle All Dues ({qr_data.provider})</b>", qr_caption_style),
+                Spacer(1, 1.5 * mm),
+                qr_drawing,
+                Spacer(1, 1.5 * mm),
+                Paragraph(qr_data.instructions, qr_sub_style),
+            ]
+
+            note_text = (
+                "<b>Notice & Instructions:</b><br/>"
+                "• This statement shows all outstanding fee bills up to the current date.<br/>"
+                "• When making a combined payment, older months are automatically cleared first.<br/>"
+                "• Any surplus or excess payment will be credited to student advance balance.<br/>"
+                "• Please keep your payment receipts or digital transaction references safe."
+            )
+            note_p = Paragraph(note_text, ParagraphStyle("StmtNote", parent=normal_style, fontSize=8, leading=11, textColor=colors.HexColor("#475569")))
+
+            bottom_table = Table([[note_p, qr_content]], colWidths=[118 * mm, 60 * mm])
+            bottom_table.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("ALIGN", (1, 0), (1, 0), "CENTER"),
+                ("BOX", (1, 0), (1, 0), 0.6, colors.HexColor("#CBD5E1")),
+                ("BACKGROUND", (1, 0), (1, 0), colors.HexColor("#F8FAFC")),
+                ("PADDING", (0, 0), (-1, -1), 6),
+            ]))
+            story.extend([tbl, Spacer(1, 6 * mm), bottom_table, Spacer(1, 8 * mm)])
+        else:
+            story.extend([tbl, Spacer(1, 12 * mm)])
+
+        story.extend([
+            Paragraph("Authorized Signature & Seal: ______________________________", normal_style)
+        ])
+
+        doc.build(story)
+        return output
     def pay_bills(
         self,
         bill_ids: list[int],

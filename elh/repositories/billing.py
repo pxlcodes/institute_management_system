@@ -47,6 +47,31 @@ class BillingRepository:
             )
         ]
 
+    def get_unpaid_bills_for_student(
+        self,
+        student_id: int,
+        exclude_bill_id: int | None = None,
+        before_date: str | None = None,
+        before_bill_id: int | None = None,
+    ) -> list[DueBill]:
+        sql = (
+            self._select()
+            + "WHERE e.student_id=? AND (b.total_amount - b.paid_amount) > 0 "
+        )
+        params = [student_id]
+        if exclude_bill_id:
+            sql += "AND b.id != ? "
+            params.append(exclude_bill_id)
+        if before_date:
+            if before_bill_id:
+                sql += "AND (b.issue_date < ? OR (b.issue_date = ? AND b.id < ?)) "
+                params.extend([before_date, before_date, before_bill_id])
+            else:
+                sql += "AND b.issue_date <= ? "
+                params.append(before_date)
+        sql += "ORDER BY b.issue_date ASC, b.id ASC"
+        return [self._model(row) for row in self.db.query(sql, tuple(params))]
+
     def enrollment(self, enrollment_id: int):
         return self.db.query_one(
             self._enrollment_select() + "WHERE e.id=?", (enrollment_id,)

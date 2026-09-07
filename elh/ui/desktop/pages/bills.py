@@ -31,6 +31,7 @@ class DueBillsPage(CrudPage):
         ttk.Button(batch,text="Select All Bills",command=lambda:self.tree.selection_set(self.tree.get_children())).pack(side="left")
         ttk.Button(batch,text="Clear Selection",command=lambda:self.tree.selection_remove(self.tree.selection())).pack(side="left",padx=5)
         ttk.Button(batch,text="Pay Selected Bill(s)",style="Accent.TButton",command=self.open_payment).pack(side="left",padx=8)
+        ttk.Button(batch,text="📄 Consolidated Statement",command=self.open_consolidated_statement).pack(side="left",padx=4)
         if getattr(self.app.services, "settings", None) and self.app.services.settings.get_bool("whatsapp_enabled", False):
             ttk.Button(batch,text="💬 WhatsApp Bill",command=self.send_whatsapp_bill).pack(side="left",padx=4)
         ttk.Button(batch,text="Open Batch PDF",command=self.open_batch_pdf).pack(side="right",padx=3)
@@ -206,6 +207,31 @@ class DueBillsPage(CrudPage):
         try:
             bills=self.selected_bills();self.app.services.billing.print_pos_many(bills);messagebox.showinfo("Batch Printed",f"Sent {len(bills)} bills to the POS printer.",parent=self)
         except Exception as exc:self.show_error(exc)
+
+    def open_consolidated_statement(self):
+        try:
+            bills = self.selected_bills()
+        except Exception:
+            try:
+                bills = [self.selected_bill()]
+            except Exception as exc:
+                self.show_error(exc)
+                return
+
+        if not bills:
+            self.show_error(ValueError("Select at least one bill first."))
+            return
+
+        student_names = {b.student_name for b in bills}
+        if len(student_names) > 1:
+            self.show_error(ValueError("All selected bills must belong to the same student to generate a consolidated statement."))
+            return
+
+        try:
+            path = self.app.services.billing.create_consolidated_statement_pdf(bills)
+            os.startfile(path)
+        except Exception as exc:
+            self.show_error(exc)
 
     def send_whatsapp_bill(self):
         try:

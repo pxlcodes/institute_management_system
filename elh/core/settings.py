@@ -64,6 +64,14 @@ DEFAULT_SETTINGS = (
         "Allow payments and expenses that exceed the selected account balance.",
     ),
     (
+        "billing_show_arrears_on_due_bills",
+        "true",
+        "Finance",
+        "Show Arrears on Due Bills",
+        "boolean",
+        "Automatically calculate and include previous unpaid bill balances on monthly bills and receipts.",
+    ),
+    (
         "health_stale_backup_hours",
         "168",
         "Application",

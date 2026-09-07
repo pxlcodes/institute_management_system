@@ -2811,10 +2811,11 @@ async function bills() {
     { key: 'balance', label: 'Balance', render: row => `<b class="${row.balance > 0 ? 'due-alert' : 'paid-ok'}">Rs. ${money(row.balance)}</b>` },
     { key: 'status', label: 'Status', render: row => `<span class="badge ${row.status === 'Paid' ? 'active' : (row.status === 'Partial' ? 'partial' : 'inactive')}">${esc(row.status)}</span>` },
     { key: 'pay', label: 'Action', render: row => {
+      const printBtn = `<button class="secondary small" title="Print / Download PDF" onclick="printBillPdf(${row.id})" style="padding:3px 7px;font-size:11px;margin-left:4px;">${uiIcon('print', 12)}</button>`;
       if (isStudent) {
-        return row.balance > 0 ? `<button class="primary small" onclick="openBillPaymentQrModal(${row.id})">Pay via QR</button>` : `<span style="color:var(--success);font-weight:600;display:inline-flex;align-items:center;gap:4px;">${uiIcon('check', 13)}Settled</span>`;
+        return (row.balance > 0 ? `<button class="primary small" onclick="openBillPaymentQrModal(${row.id})">Pay via QR</button>` : `<span style="color:var(--success);font-weight:600;display:inline-flex;align-items:center;gap:4px;">${uiIcon('check', 13)}Settled</span>`) + printBtn;
       }
-      return row.balance > 0 ? `<button class="primary small" onclick="billPayment(${row.id})">Receive payment</button>` : '';
+      return (row.balance > 0 ? `<button class="primary small" onclick="billPayment(${row.id})">Receive payment</button>` : '') + printBtn;
     } }
   ];
   const tb = isStudent
@@ -2822,6 +2823,7 @@ async function bills() {
     : [
         action('Generate bills', 'billGenerationForm()', true),
         `<button id="paySelectedBillsBtn" class="primary" style="display:none;background:#059669;border-color:#059669;padding:6px 12px;font-size:13px;align-items:center;gap:6px;" onclick="openSelectedBillsPayment()">${uiIcon('bills', 14)} Pay Selected Bills (<span id="selectedBillsCount">0</span>)</button>`,
+        `<button id="consolidatedStatementBtn" class="secondary" style="display:none;padding:6px 12px;font-size:13px;align-items:center;gap:6px;" onclick="openConsolidatedStatement()">${uiIcon('print', 14)} Consolidated Statement</button>`,
         action('Export CSV', 'exportBills()')
       ];
   const title = isStudent ? 'My Fees & Bills' : 'Due Bills & Payments';
@@ -2880,15 +2882,32 @@ function updateSelectedBillsUI() {
 
   const btn = document.getElementById('paySelectedBillsBtn');
   const countSpan = document.getElementById('selectedBillsCount');
-  if (!btn) return;
-  if (selectedBills.length > 0) {
-    btn.style.display = 'inline-flex';
-    btn.style.alignItems = 'center';
-    btn.style.gap = '6px';
-    const totalBal = selectedBills.reduce((sum, b) => sum + Number(b.balance || 0), 0);
-    if (countSpan) countSpan.textContent = `${selectedBills.length} · Rs. ${money(totalBal)}`;
-  } else {
-    btn.style.display = 'none';
+  if (btn) {
+    if (selectedBills.length > 0) {
+      btn.style.display = 'inline-flex';
+      btn.style.alignItems = 'center';
+      btn.style.gap = '6px';
+      const totalBal = selectedBills.reduce((sum, b) => sum + Number(b.balance || 0), 0);
+      if (countSpan) countSpan.textContent = `${selectedBills.length} · Rs. ${money(totalBal)}`;
+    } else {
+      btn.style.display = 'none';
+    }
+  }
+
+  const stmtBtn = document.getElementById('consolidatedStatementBtn');
+  if (stmtBtn) {
+    if (selectedBills.length > 0) {
+      const studentNames = new Set(selectedBills.map(b => b.student_name));
+      if (studentNames.size === 1) {
+        stmtBtn.style.display = 'inline-flex';
+        stmtBtn.style.alignItems = 'center';
+        stmtBtn.style.gap = '6px';
+      } else {
+        stmtBtn.style.display = 'none';
+      }
+    } else {
+      stmtBtn.style.display = 'none';
+    }
   }
 }
 
@@ -2899,6 +2918,26 @@ function openSelectedBillsPayment() {
     return;
   }
   multiBillPaymentModal(ids);
+}
+
+function openConsolidatedStatement() {
+  const ids = Array.from(window._selectedBillIds || []);
+  if (!ids.length) {
+    alert('Please select at least one bill first.');
+    return;
+  }
+  const allBills = window._bills || [];
+  const selectedBills = allBills.filter(b => ids.includes(b.id));
+  const studentNames = new Set(selectedBills.map(b => b.student_name));
+  if (studentNames.size > 1) {
+    alert('Please select bills belonging to a single student to generate a consolidated statement.');
+    return;
+  }
+  window.open(`/api/bills/consolidated-statement?bill_ids=${ids.join(',')}`, '_blank');
+}
+
+function printBillPdf(billId) {
+  window.open(`/api/bills/${billId}/pdf`, '_blank');
 }
 
 async function multiBillPaymentModal(billIds) {
@@ -8070,7 +8109,7 @@ function boot() {
 Object.assign(window, {
   go, logout, toggleDarkMode, toggleSidebar, toggleNavGroup, triggerAttendanceSync, filterStudents, exportStudentCsv, studentForm, editStudent, archiveStudent,
   viewStudentProfile, downloadStudentProfilePdf, switchProfileTab, student_profile, exportEnrollments, enrollmentForm,
-  exportBills, billGenerationForm, billPayment, toggleSelectAllBills, onBillCheckboxChange, updateSelectedBillsUI, openSelectedBillsPayment, multiBillPaymentModal, attendanceAlerts, manualAttendanceForm, switchManualPeople,
+  exportBills, billGenerationForm, billPayment, toggleSelectAllBills, onBillCheckboxChange, updateSelectedBillsUI, openSelectedBillsPayment, multiBillPaymentModal, openConsolidatedStatement, printBillPdf, attendanceAlerts, manualAttendanceForm, switchManualPeople,
   attendanceReviewForm, exportCourses, courseForm, exportSchools, schoolForm, exportStaff, staffForm, accountForm,
   moneyForm, taskForm, completeTask, bugForm, transferForm, openCalendarMonth, calendarEventForm,
   changePasswordModal, assistant, runAssistantCmd, clearAssistant, handleAssistantSubmit, sendAssistantQuery,

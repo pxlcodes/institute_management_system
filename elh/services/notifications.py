@@ -796,7 +796,7 @@ class NotificationService:
         """Generate a complete, professionally formatted WhatsApp billing notice and 1-click URL."""
         row = self.db.query_one(
             "SELECT b.id, b.bill_number, b.billing_period, b.issue_date, b.due_date, "
-            "b.total_amount, b.paid_amount, b.status, s.student_name, s.contact, "
+            "b.total_amount, b.paid_amount, b.status, s.id student_id, s.student_name, s.contact, "
             "s.parent_name, c.course_name "
             "FROM due_bills b "
             "JOIN enrollments e ON e.id = b.enrollment_id "
@@ -822,6 +822,18 @@ class NotificationService:
         remaining = total_amt - paid_amt
 
         contact = (row["contact"] or "").strip()
+
+        # Check previous arrears
+        older_due_rows = self.db.query(
+            "SELECT b.id, b.bill_number, b.billing_period, (b.total_amount - b.paid_amount) bal "
+            "FROM due_bills b JOIN enrollments e ON e.id = b.enrollment_id "
+            "WHERE e.student_id = ? AND b.id != ? AND (b.total_amount - b.paid_amount) > 0 "
+            "AND (b.issue_date < ? OR (b.issue_date = ? AND b.id < ?)) "
+            "ORDER BY b.issue_date ASC, b.id ASC",
+            (row["student_id"], bill_id, row["issue_date"], row["issue_date"], bill_id),
+        )
+        total_arrears = sum(Decimal(str(r["bal"])) for r in older_due_rows)
+        grand_total = remaining + total_arrears
 
         acc_info = f"Kamana Sewa Bikas Bank: 08000300919240000001 ({company_name})\n• Fonepay / eSewa: {company_phone or '9860962645'}"
         try:
@@ -850,6 +862,15 @@ class NotificationService:
 
         phone_footer = f"\nFor inquiries, call {company_phone}." if company_phone else ""
 
+        if older_due_rows:
+            due_breakdown = (
+                f"• Current Bill ({period}): *Rs. {remaining:,.2f}*\n"
+                f"• Previous Arrears ({len(older_due_rows)} bill(s)): *Rs. {total_arrears:,.2f}*\n"
+                f"• *Grand Total Outstanding: Rs. {grand_total:,.2f}*"
+            )
+        else:
+            due_breakdown = f"• *Amount Due: Rs. {remaining:,.2f}*"
+
         message = (
             f"*{company_name}*\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
@@ -857,9 +878,8 @@ class NotificationService:
             f"Dear *{student_name}*,\n"
             f"Your tuition fee invoice for *{course}* ({period}) is ready.\n\n"
             f"• Bill No: *{bill_number}*\n"
-            f"• Total Amount: *Rs. {total_amt:,.2f}*\n"
-            f"• Paid Amount: *Rs. {paid_amt:,.2f}*\n"
-            f"• *Amount Due: Rs. {remaining:,.2f}*\n"
+            f"• Total Bill Amount: *Rs. {total_amt:,.2f}*\n"
+            f"{due_breakdown}\n"
             f"• Due Date: *{due_date}*\n\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"💳 *How to Pay:*\n"
@@ -882,7 +902,7 @@ class NotificationService:
             "student_name": student_name,
             "recipient": contact,
             "parent_name": dict(row).get("parent_name") or "",
-            "amount_due": f"{remaining:,.2f}",
+            "amount_due": f"{grand_total:,.2f}",
             "message": message,
             "whatsapp_url": wa_url,
         }
