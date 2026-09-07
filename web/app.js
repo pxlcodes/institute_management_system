@@ -2789,48 +2789,316 @@ async function bills() {
   const rows = await api('/bills');
   const isStudent = me?.role === 'student';
   window._selectedBillIds = new Set();
-  const columns = [
-    ...(isStudent ? [] : [{
-      key: 'select_bill',
-      isCheckbox: true,
-      rawHeader: true,
-      sortable: false,
-      label: '<input type="checkbox" id="selectAllBills" title="Select All" onchange="toggleSelectAllBills(this.checked)" style="cursor:pointer;width:16px;height:16px;accent-color:#2563eb;margin:0;vertical-align:middle;">',
-      headerHtml: '<input type="checkbox" id="selectAllBills" title="Select All" onchange="toggleSelectAllBills(this.checked)" style="cursor:pointer;width:16px;height:16px;accent-color:#2563eb;margin:0;vertical-align:middle;">',
-      render: row => row.balance > 0
-        ? `<input type="checkbox" class="bill-select-chk" value="${row.id}" data-student-id="${row.student_id || ''}" data-student="${esc(row.student_name)}" data-balance="${row.balance}" onchange="onBillCheckboxChange(this)" ${(window._selectedBillIds && window._selectedBillIds.has(row.id)) ? 'checked' : ''} style="cursor:pointer;width:16px;height:16px;accent-color:#2563eb;margin:0;vertical-align:middle;">`
-        : ''
-    }]),
-    { key: 'bill_number', label: 'Bill no.' },
-    ...(isStudent ? [] : [{ key: 'student_name', label: 'Student' }]),
+
+  if (isStudent) {
+    const columns = [
+      { key: 'bill_number', label: 'Bill no.' },
+      { key: 'course_name', label: 'Course' },
+      { key: 'billing_period', label: 'Period' },
+      { key: 'due_date', label: 'Due date' },
+      { key: 'total_amount', label: 'Total', render: row => money(row.total_amount) },
+      { key: 'paid_amount', label: 'Paid', render: row => money(row.paid_amount) },
+      { key: 'balance', label: 'Balance', render: row => `<b class="${row.balance > 0 ? 'due-alert' : 'paid-ok'}">Rs. ${money(row.balance)}</b>` },
+      { key: 'status', label: 'Status', render: row => `<span class="badge ${row.status === 'Paid' ? 'active' : (row.status === 'Partial' ? 'partial' : 'inactive')}">${esc(row.status)}</span>` },
+      { key: 'pay', label: 'Action', render: row => {
+        const printBtn = `<button class="secondary small" title="Print / Download PDF" onclick="printBillPdf(${row.id})" style="padding:3px 7px;font-size:11px;margin-left:4px;">${uiIcon('print', 12)}</button>`;
+        return (row.balance > 0 ? `<button class="primary small" onclick="openBillPaymentQrModal(${row.id})">Pay via QR</button>` : `<span style="color:var(--success);font-weight:600;display:inline-flex;align-items:center;gap:4px;">${uiIcon('check', 13)}Settled</span>`) + printBtn;
+      } }
+    ];
+    shell('My Fees & Bills', 'Your fee statements, payment records, and balances', `${toolbar([action('Export CSV', 'exportBills()')])}${table(rows, columns)}`);
+    window._bills = rows;
+    window._billColumns = columns;
+    return;
+  }
+
+  // Admin / Staff View:
+  window._billViewMode = window._billViewMode || 'summary';
+  window._billFilterStatus = window._billFilterStatus || 'pending';
+
+  // Aggregate by student for Student Credit / Defaulters Summary
+  const debtorMap = new Map();
+  let totalOutstanding = 0;
+  let pendingBillsCount = 0;
+  let paidBillsCount = 0;
+
+  rows.forEach(b => {
+    const bal = Number(b.balance) || 0;
+    if (bal > 0) {
+      pendingBillsCount++;
+      totalOutstanding += bal;
+      const sid = b.student_id;
+      if (!debtorMap.has(sid)) {
+        debtorMap.set(sid, {
+          student_id: sid,
+          student_name: b.student_name,
+          contact: b.contact || '',
+          courses: new Set(),
+          periods: [],
+          total_due: 0,
+          bill_ids: [],
+          latest_bill_id: b.id,
+        });
+      }
+      const d = debtorMap.get(sid);
+      if (b.course_name) d.courses.add(b.course_name);
+      if (b.billing_period) d.periods.push(b.billing_period);
+      d.total_due += bal;
+      d.bill_ids.push(b.id);
+      d.latest_bill_id = b.id;
+    } else {
+      paidBillsCount++;
+    }
+  });
+
+  const studentSummaries = Array.from(debtorMap.values()).map(d => ({
+    ...d,
+    courses_display: Array.from(d.courses).sort().join(', ') || '—',
+    periods_display: Array.from(new Set(d.periods)).sort().join(', ') || '—',
+    unpaid_bills_count: d.bill_ids.length,
+  }));
+
+  studentSummaries.sort((a, b) => b.unpaid_bills_count - a.unpaid_bills_count || b.total_due - a.total_due || a.student_name.localeCompare(b.student_name));
+
+  const multiOverdueStudents = new Set(studentSummaries.filter(s => s.unpaid_bills_count >= 2).map(s => s.student_id));
+  const overdueBillsCount = rows.filter(b => multiOverdueStudents.has(b.student_id) && Number(b.balance) > 0).length;
+
+  // Filter Bar HTML
+  const filterBarHtml = `
+    <div style="background:var(--bg-card);border:1px solid var(--line);border-radius:var(--radius-lg);padding:12px 16px;margin-bottom:14px;box-shadow:var(--shadow-sm);display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;">
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
+        <div style="display:inline-flex;background:var(--bg-body);border:1px solid var(--line);border-radius:var(--radius-pill);padding:3px;gap:3px;">
+          <button type="button" class="pill-btn ${window._billViewMode === 'summary' ? 'active' : ''}" onclick="switchBillViewMode('summary')">
+            ${uiIcon('users', 14)} <b>Student Credit Summary</b> (${debtorMap.size})
+          </button>
+          <button type="button" class="pill-btn ${window._billViewMode === 'detailed' ? 'active' : ''}" onclick="switchBillViewMode('detailed')">
+            ${uiIcon('bills', 14)} <b>Detailed Bills List</b> (${rows.length})
+          </button>
+        </div>
+
+        <div style="width:1px;height:24px;background:var(--line);margin:0 2px;"></div>
+
+        <div style="display:inline-flex;gap:6px;flex-wrap:wrap;">
+          <button type="button" class="filter-chip ${window._billFilterStatus === 'pending' ? 'active' : ''}" onclick="filterBillsByStatus('pending')" title="Show pending unpaid bills">
+            🚨 Pending Dues (${pendingBillsCount})
+          </button>
+          <button type="button" class="filter-chip ${window._billFilterStatus === 'overdue' ? 'active' : ''}" onclick="filterBillsByStatus('overdue')" title="Students with 2 or more unpaid billing months">
+            ⚠️ Overdue (2+ Mos) (${overdueBillsCount})
+          </button>
+          <button type="button" class="filter-chip ${window._billFilterStatus === 'paid' ? 'active' : ''}" onclick="filterBillsByStatus('paid')" title="Show fully settled bills">
+            ✅ Fully Paid (${paidBillsCount})
+          </button>
+          <button type="button" class="filter-chip ${window._billFilterStatus === 'all' ? 'active' : ''}" onclick="filterBillsByStatus('all')" title="Show all bills in database">
+            All Bills (${rows.length})
+          </button>
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:10px;">
+        <div style="background:#fef2f2;border:1px solid #fecaca;color:#dc2626;padding:6px 14px;border-radius:var(--radius-md);font-weight:700;font-size:13px;display:inline-flex;align-items:center;gap:6px;">
+          <span>Credit Outstanding:</span>
+          <span style="font-size:15px;">Rs. ${money(totalOutstanding)}</span>
+        </div>
+      </div>
+    </div>
+  `;
+
+  let mainContentHtml = '';
+
+  if (window._billViewMode === 'summary') {
+    let summariesToShow = studentSummaries;
+    if (window._billFilterStatus === 'overdue') {
+      summariesToShow = studentSummaries.filter(s => s.unpaid_bills_count >= 2);
+    } else if (window._billFilterStatus === 'paid') {
+      summariesToShow = [];
+    }
+
+    const summaryColumns = [
+      {
+        key: 'student_name',
+        label: 'Student Name',
+        render: row => `
+          <div style="font-weight:600;">
+            <a href="#students" onclick="event.preventDefault(); studentProfile(${row.student_id})" style="color:var(--brand);text-decoration:none;">${esc(row.student_name)}</a>
+            <span class="muted" style="font-size:11px;font-weight:normal;margin-left:4px;">#${row.student_id}</span>
+          </div>
+        `
+      },
+      {
+        key: 'contact',
+        label: 'Contact / Phone',
+        render: row => row.contact ? `<a href="tel:${esc(row.contact)}" style="text-decoration:none;color:inherit;font-weight:500;">📞 ${esc(row.contact)}</a>` : '<span class="muted">—</span>'
+      },
+      { key: 'courses_display', label: 'Enrolled Course(s)' },
+      {
+        key: 'unpaid_bills_count',
+        label: 'Unpaid Months',
+        render: row => `<span class="badge ${row.unpaid_bills_count >= 2 ? 'danger' : 'warning'}" style="font-weight:700;">${row.unpaid_bills_count} Month${row.unpaid_bills_count > 1 ? 's' : ''} (${row.bill_ids.length} bills)</span>`
+      },
+      {
+        key: 'periods_display',
+        label: 'Pending Periods',
+        render: row => `<span style="font-size:12px;color:var(--muted);">${esc(row.periods_display)}</span>`
+      },
+      {
+        key: 'total_due',
+        label: 'Total Outstanding',
+        render: row => `<b class="due-alert" style="font-size:14px;color:#dc2626;">Rs. ${money(row.total_due)}</b>`
+      },
+      {
+        key: 'actions',
+        label: 'Actions',
+        render: row => `
+          <div style="display:inline-flex;gap:4px;align-items:center;">
+            <button type="button" class="primary small" title="Print Consolidated Statement (All Unpaid Months)" onclick="window.open('/api/bills/consolidated-statement?student_id=${row.student_id}', '_blank')" style="display:inline-flex;align-items:center;gap:4px;padding:4px 8px;font-size:12px;">
+              ${uiIcon('print', 13)} Statement
+            </button>
+            <button type="button" class="secondary small" title="Settle All Bills for this Student" onclick="multiBillPaymentModal([${row.bill_ids.join(',')}])" style="display:inline-flex;align-items:center;gap:4px;padding:4px 8px;font-size:12px;background:#ecfdf5;color:#059669;border-color:#a7f3d0;">
+              💳 Settle All
+            </button>
+            <button type="button" class="secondary small" title="WhatsApp Due Notice" onclick="openStudentWhatsAppDueNotice(${row.latest_bill_id})" style="padding:4px 8px;font-size:12px;">
+              💬
+            </button>
+            <button type="button" class="secondary small" title="View Individual Bill Rows" onclick="viewStudentDetailedBills('${esc(row.student_name)}')" style="padding:4px 8px;font-size:12px;">
+              🔍
+            </button>
+          </div>
+        `
+      }
+    ];
+
+    if (!summariesToShow.length) {
+      mainContentHtml = `
+        <div style="background:var(--bg-card);border:1px solid var(--line);border-radius:var(--radius-lg);padding:40px 20px;text-align:center;">
+          <div style="font-size:36px;margin-bottom:8px;">${window._billFilterStatus === 'paid' ? '📋' : '🎉'}</div>
+          <h3 style="margin:0 0 6px 0;color:var(--ink-dark);">${window._billFilterStatus === 'paid' ? 'Switch to Detailed View' : 'No Pending Credit Dues!'}</h3>
+          <p class="muted" style="margin:0;">${window._billFilterStatus === 'paid' ? 'To inspect paid bills, please switch to the Detailed Bills List view above.' : 'All students are currently fully paid and up to date.'}</p>
+        </div>
+      `;
+    } else {
+      mainContentHtml = table(summariesToShow, summaryColumns);
+    }
+  } else {
+    // Detailed Bills View
+    let detailedRows = rows;
+    if (window._billFilterStatus === 'pending') {
+      detailedRows = rows.filter(b => Number(b.balance) > 0);
+    } else if (window._billFilterStatus === 'overdue') {
+      detailedRows = rows.filter(b => multiOverdueStudents.has(b.student_id) && Number(b.balance) > 0);
+    } else if (window._billFilterStatus === 'paid') {
+      detailedRows = rows.filter(b => Number(b.balance) <= 0);
+    }
+
+    const columns = [
+      {
+        key: 'select_bill',
+        isCheckbox: true,
+        rawHeader: true,
+        sortable: false,
+        label: '<input type="checkbox" id="selectAllBills" title="Select All" onchange="toggleSelectAllBills(this.checked)" style="cursor:pointer;width:16px;height:16px;accent-color:#2563eb;margin:0;vertical-align:middle;">',
+        headerHtml: '<input type="checkbox" id="selectAllBills" title="Select All" onchange="toggleSelectAllBills(this.checked)" style="cursor:pointer;width:16px;height:16px;accent-color:#2563eb;margin:0;vertical-align:middle;">',
+        render: row => row.balance > 0
+          ? `<input type="checkbox" class="bill-select-chk" value="${row.id}" data-student-id="${row.student_id || ''}" data-student="${esc(row.student_name)}" data-balance="${row.balance}" onchange="onBillCheckboxChange(this)" ${(window._selectedBillIds && window._selectedBillIds.has(row.id)) ? 'checked' : ''} style="cursor:pointer;width:16px;height:16px;accent-color:#2563eb;margin:0;vertical-align:middle;">`
+          : ''
+      },
+      { key: 'bill_number', label: 'Bill no.' },
+      { key: 'student_name', label: 'Student' },
+      { key: 'course_name', label: 'Course' },
+      { key: 'billing_period', label: 'Period' },
+      { key: 'due_date', label: 'Due date' },
+      { key: 'total_amount', label: 'Total', render: row => money(row.total_amount) },
+      { key: 'paid_amount', label: 'Paid', render: row => money(row.paid_amount) },
+      { key: 'balance', label: 'Balance', render: row => `<b class="${row.balance > 0 ? 'due-alert' : 'paid-ok'}">Rs. ${money(row.balance)}</b>` },
+      { key: 'status', label: 'Status', render: row => `<span class="badge ${row.status === 'Paid' ? 'active' : (row.status === 'Partial' ? 'partial' : 'inactive')}">${esc(row.status)}</span>` },
+      { key: 'pay', label: 'Action', render: row => {
+        const printBtn = `<button class="secondary small" title="Print / Download PDF" onclick="printBillPdf(${row.id})" style="padding:3px 7px;font-size:11px;margin-left:4px;">${uiIcon('print', 12)}</button>`;
+        const waBtn = `<button class="secondary small" title="WhatsApp Due Notice" onclick="openStudentWhatsAppDueNotice(${row.id})" style="padding:3px 7px;font-size:11px;margin-left:4px;">💬</button>`;
+        return (row.balance > 0 ? `<button class="primary small" onclick="billPayment(${row.id})">Receive payment</button>` : '') + printBtn + waBtn;
+      } }
+    ];
+
+    mainContentHtml = table(detailedRows, columns);
+  }
+
+  const tb = [
+    action('Generate bills', 'billGenerationForm()', true),
+    `<button id="paySelectedBillsBtn" class="primary" style="display:none;background:#059669;border-color:#059669;padding:6px 12px;font-size:13px;align-items:center;gap:6px;" onclick="openSelectedBillsPayment()">${uiIcon('bills', 14)} Pay Selected Bills (<span id="selectedBillsCount">0</span>)</button>`,
+    `<button id="consolidatedStatementBtn" class="secondary" style="display:none;padding:6px 12px;font-size:13px;align-items:center;gap:6px;" onclick="openConsolidatedStatement()">${uiIcon('print', 14)} Consolidated Statement</button>`,
+    action('Export CSV', 'exportBills()')
+  ];
+
+  shell('Due Bills & Student Credit', 'Track student credit, print consolidated statements, and receive payments', `${toolbar(tb)}${filterBarHtml}${mainContentHtml}`);
+  window._bills = rows;
+}
+
+function switchBillViewMode(mode) {
+  window._billViewMode = mode;
+  bills();
+}
+
+function filterBillsByStatus(status) {
+  window._billFilterStatus = status;
+  bills();
+}
+
+function viewStudentDetailedBills(studentName) {
+  window._billViewMode = 'detailed';
+  window._billFilterStatus = 'pending';
+  bills().then(() => {
+    setTimeout(() => {
+      const searchInput = document.querySelector('.dt-search-input');
+      if (searchInput) {
+        searchInput.value = studentName;
+        searchInput.dispatchEvent(new Event('input'));
+      }
+    }, 100);
+  });
+}
+
+async function openStudentWhatsAppDueNotice(billId) {
+  try {
+    const data = await api(`/bills/${billId}/whatsapp`);
+    const host = modal(`WhatsApp Due Notice — ${esc(data.student_name)}`, `
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;background:var(--bg-body);padding:10px 14px;border-radius:var(--radius-md);border:1px solid var(--line);">
+          <div>Recipient: <b>${esc(data.recipient || 'No contact registered')}</b></div>
+          <div style="font-weight:700;color:var(--danger);">Due: Rs. ${money(data.amount_due)}</div>
+        </div>
+        <div>
+          <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Message Preview (includes arrears):</label>
+          <textarea id="waMsgBox" rows="8" style="font-family:inherit;font-size:13px;width:100%;resize:vertical;padding:8px 10px;border:1px solid var(--line);border-radius:var(--radius-md);">${esc(data.message)}</textarea>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;">
+          <button type="button" class="secondary" onclick="navigator.clipboard.writeText(document.getElementById('waMsgBox').value); alert('Copied to clipboard!');">📋 Copy</button>
+          <div style="display:flex;gap:8px;">
+            <button type="button" class="secondary" onclick="this.closest('.modal').remove()">Close</button>
+            <a href="${esc(data.url)}" target="_blank" class="primary button" style="background:#25d366;border-color:#25d366;text-decoration:none;display:inline-flex;align-items:center;gap:6px;padding:8px 14px;color:#ffffff;border-radius:var(--radius-md);font-weight:600;">
+              🚀 Open WhatsApp
+            </a>
+          </div>
+        </div>
+      </div>
+    `);
+  } catch (err) {
+    showError(err);
+  }
+}
+
+function exportBills() {
+  const bills = window._bills || [];
+  const exportCols = [
+    { key: 'bill_number', label: 'Bill No' },
+    { key: 'student_name', label: 'Student' },
+    { key: 'contact', label: 'Contact' },
     { key: 'course_name', label: 'Course' },
     { key: 'billing_period', label: 'Period' },
-    { key: 'due_date', label: 'Due date' },
-    { key: 'total_amount', label: 'Total', render: row => money(row.total_amount) },
-    { key: 'paid_amount', label: 'Paid', render: row => money(row.paid_amount) },
-    { key: 'balance', label: 'Balance', render: row => `<b class="${row.balance > 0 ? 'due-alert' : 'paid-ok'}">Rs. ${money(row.balance)}</b>` },
-    { key: 'status', label: 'Status', render: row => `<span class="badge ${row.status === 'Paid' ? 'active' : (row.status === 'Partial' ? 'partial' : 'inactive')}">${esc(row.status)}</span>` },
-    { key: 'pay', label: 'Action', render: row => {
-      const printBtn = `<button class="secondary small" title="Print / Download PDF" onclick="printBillPdf(${row.id})" style="padding:3px 7px;font-size:11px;margin-left:4px;">${uiIcon('print', 12)}</button>`;
-      if (isStudent) {
-        return (row.balance > 0 ? `<button class="primary small" onclick="openBillPaymentQrModal(${row.id})">Pay via QR</button>` : `<span style="color:var(--success);font-weight:600;display:inline-flex;align-items:center;gap:4px;">${uiIcon('check', 13)}Settled</span>`) + printBtn;
-      }
-      return (row.balance > 0 ? `<button class="primary small" onclick="billPayment(${row.id})">Receive payment</button>` : '') + printBtn;
-    } }
+    { key: 'issue_date', label: 'Issue Date' },
+    { key: 'due_date', label: 'Due Date' },
+    { key: 'total_amount', label: 'Total Amount' },
+    { key: 'paid_amount', label: 'Paid Amount' },
+    { key: 'balance', label: 'Balance Due' },
+    { key: 'status', label: 'Status' },
   ];
-  const tb = isStudent
-    ? [action('Export CSV', 'exportBills()')]
-    : [
-        action('Generate bills', 'billGenerationForm()', true),
-        `<button id="paySelectedBillsBtn" class="primary" style="display:none;background:#059669;border-color:#059669;padding:6px 12px;font-size:13px;align-items:center;gap:6px;" onclick="openSelectedBillsPayment()">${uiIcon('bills', 14)} Pay Selected Bills (<span id="selectedBillsCount">0</span>)</button>`,
-        `<button id="consolidatedStatementBtn" class="secondary" style="display:none;padding:6px 12px;font-size:13px;align-items:center;gap:6px;" onclick="openConsolidatedStatement()">${uiIcon('print', 14)} Consolidated Statement</button>`,
-        action('Export CSV', 'exportBills()')
-      ];
-  const title = isStudent ? 'My Fees & Bills' : 'Due Bills & Payments';
-  const subtitle = isStudent ? 'Your fee statements, payment records, and balances' : 'Generate bills, accept payments, and track balances';
-  shell(title, subtitle, `${toolbar(tb)}${table(rows, columns)}`);
-  window._bills = rows;
-  window._billColumns = columns;
+  csvDownload('due_bills.csv', bills, exportCols);
 }
 
 function onBillCheckboxChange(cb) {

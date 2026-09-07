@@ -20,6 +20,7 @@ class DueBill:
     paid_amount: Decimal
     status: str
     pdf_path: str = ""
+    contact: str = ""
 
 
 @dataclass(frozen=True)

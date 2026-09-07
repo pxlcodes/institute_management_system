@@ -211,6 +211,89 @@ class BillArrearsAndStatementTests(unittest.TestCase):
         self.assertIn("Grand Total Outstanding", wa_data["message"])
         self.assertEqual(wa_data["amount_due"], "3,000.00")
 
+    def test_student_dues_summary_and_filtering(self):
+        # Create second student and enrollment
+        student2_id = self.db.execute(
+            "INSERT INTO students (student_name, class_name, contact, status, joining_date) "
+            "VALUES ('Sita Sharma', 'Class 10', '9800000002', 'Active', '2083/01/01')"
+        )
+        enr2_id = self.db.execute(
+            "INSERT INTO enrollments (student_id, course_id, level, start_date, monthly_fee, status) "
+            "VALUES (?, ?, 'Class 10', '2083/01/01', 1200, 'Active')",
+            (student2_id, self.course_id),
+        )
+
+        # Student 1: 2 unpaid bills
+        b1 = self.services.billing.generate(self.enrollment_id, "2083/01", "2083/01/05", "2083/01/15").bill
+        b2 = self.services.billing.generate(self.enrollment_id, "2083/02", "2083/02/05", "2083/02/15").bill
+
+        # Student 2: 1 paid bill, 1 unpaid bill
+        b3 = self.services.billing.generate(enr2_id, "2083/01", "2083/01/05", "2083/01/15").bill
+        self.services.billing.pay_bills(
+            [b3.id], Decimal("1200"), "2083/01/10", self.account_id, "Cash", "REC-001"
+        )
+        b4 = self.services.billing.generate(enr2_id, "2083/02", "2083/02/05", "2083/02/15").bill
+
+        # Test service: get_student_dues_summary
+        summaries = self.services.billing.get_student_dues_summary()
+        self.assertEqual(len(summaries), 2)
+        s1 = next(s for s in summaries if s["student_id"] == self.student_id)
+        self.assertEqual(s1["student_name"], "Bikash Rai")
+        self.assertEqual(s1["contact"], "9800000001")
+        self.assertEqual(s1["unpaid_bills_count"], 2)
+        self.assertEqual(s1["total_due"], 3000.0)
+
+        s2 = next(s for s in summaries if s["student_id"] == student2_id)
+        self.assertEqual(s2["unpaid_bills_count"], 1)
+        self.assertEqual(s2["total_due"], 1200.0)
+
+        # Test min_unpaid_months=2 (Overdue filter)
+        overdue_summaries = self.services.billing.get_student_dues_summary(min_unpaid_months=2)
+        self.assertEqual(len(overdue_summaries), 1)
+        self.assertEqual(overdue_summaries[0]["student_id"], self.student_id)
+
+        # Test Web API: GET /api/bills/student-dues-summary
+        status, _, body = asyncio.run(
+            _run_asgi_request(
+                self.app,
+                "GET",
+                "/api/bills/student-dues-summary",
+                headers={"Authorization": f"Bearer {self.admin_token}"},
+            )
+        )
+        self.assertEqual(status, 200)
+        api_summaries = json.loads(body.decode("utf-8"))
+        self.assertEqual(len(api_summaries), 2)
+
+        # Test Web API: GET /api/bills?status=pending (should return 3 unpaid bills: b1, b2, b4)
+        status, _, body = asyncio.run(
+            _run_asgi_request(
+                self.app,
+                "GET",
+                "/api/bills?status=pending",
+                headers={"Authorization": f"Bearer {self.admin_token}"},
+            )
+        )
+        self.assertEqual(status, 200)
+        pending_bills = json.loads(body.decode("utf-8"))
+        self.assertEqual(len(pending_bills), 3)
+        self.assertTrue(all(b["balance"] > 0 for b in pending_bills))
+
+        # Test Web API: GET /api/bills?status=paid (should return 1 bill: b3)
+        status, _, body = asyncio.run(
+            _run_asgi_request(
+                self.app,
+                "GET",
+                "/api/bills?status=paid",
+                headers={"Authorization": f"Bearer {self.admin_token}"},
+            )
+        )
+        self.assertEqual(status, 200)
+        paid_bills = json.loads(body.decode("utf-8"))
+        self.assertEqual(len(paid_bills), 1)
+        self.assertEqual(paid_bills[0]["id"], b3.id)
+        self.assertEqual(paid_bills[0]["balance"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

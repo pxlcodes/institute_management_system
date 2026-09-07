@@ -402,7 +402,7 @@ class BillingRepository:
     @staticmethod
     def _select() -> str:
         return (
-            "SELECT b.*,e.student_id,e.course_id,s.student_name,c.course_name "
+            "SELECT b.*,e.student_id,e.course_id,s.student_name,s.contact,c.course_name "
             "FROM due_bills b JOIN enrollments e ON e.id=b.enrollment_id "
             "JOIN students s ON s.id=e.student_id "
             "JOIN courses c ON c.id=e.course_id "
@@ -410,6 +410,11 @@ class BillingRepository:
 
     @staticmethod
     def _model(row) -> DueBill:
+        contact_val = ""
+        try:
+            contact_val = str(row["contact"] or "")
+        except (KeyError, IndexError):
+            pass
         return DueBill(
             int(row["id"]), row["bill_number"], int(row["enrollment_id"]),
             int(row["student_id"]), row["student_name"], row["course_name"],
@@ -417,4 +422,5 @@ class BillingRepository:
             Decimal(str(row["subtotal"])), Decimal(str(row["discount"])),
             Decimal(str(row["total_amount"])), Decimal(str(row["paid_amount"])),
             row["status"], row["pdf_path"] or "",
+            contact_val,
         )

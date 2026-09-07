@@ -1,190 +1,356 @@
 from __future__ import annotations
 import os
 import tkinter as tk
+from decimal import Decimal
 from pathlib import Path
-from tkinter import messagebox,ttk
-from elh.ui.desktop.components import CrudPage,FormBuilder
-from elh.ui.desktop.helpers import add_days,current_month,money,parse_amount,today_iso,validate_date
+from tkinter import messagebox, ttk
+from elh.ui.desktop.components import CrudPage, FormBuilder
+from elh.ui.desktop.helpers import add_days, current_month, money, parse_amount, today_iso, validate_date
 
 
 class DueBillsPage(CrudPage):
-    def __init__(self,parent,app):
-        super().__init__(parent,app);self.enrollment_map={};self.selected_bill_id=None
-        ttk.Label(self,text="Student Due Bills",style="Title.TLabel").pack(anchor="w")
-        form=self.create_form_dialog("Generate Bill",padding=8);form.pack(fill="x",pady=8)
-        self.vars={"enrollment":tk.StringVar(),"period":tk.StringVar(value=current_month()),"issue":tk.StringVar(value=today_iso()),"due":tk.StringVar(value=add_days(today_iso(),7)),"remarks":tk.StringVar()}
-        fb=FormBuilder(form);self.enrollment_combo=fb.combo("Enrollment *",self.vars["enrollment"],[],searchable=True);fb.entry("Billing Period *",self.vars["period"]);fb.entry("Issue Date *",self.vars["issue"]);fb.entry("Due Date *",self.vars["due"]);fb.entry("Remarks",self.vars["remarks"])
-        actions=ttk.Frame(form,style="Form.TFrame");actions.grid(row=0,column=2,rowspan=5,padx=12,sticky="n")
-        ttk.Button(actions,text="Generate Due Bill",command=self.generate).pack(fill="x",pady=2)
-        ttk.Button(actions,text="⚡ Auto-Invoicing...",style="Accent.TButton",command=self.open_auto_invoicing).pack(fill="x",pady=2)
-        ttk.Button(actions,text="Generate Multiple...",command=self.open_bulk_generator).pack(fill="x",pady=2)
-        ttk.Button(actions,text="Create / Open PDF",command=self.create_pdf).pack(fill="x",pady=2)
-        ttk.Button(actions,text="Print PDF (Normal Printer)",command=self.print_pdf).pack(fill="x",pady=2)
-        ttk.Button(actions,text="Print POS Receipt",command=self.print_pos).pack(fill="x",pady=2)
-        if getattr(self.app.services, "settings", None) and self.app.services.settings.get_bool("whatsapp_enabled", False):
-            ttk.Button(actions,text="💬 WhatsApp Bill",style="Accent.TButton",command=self.send_whatsapp_bill).pack(fill="x",pady=2)
-        area=ttk.Frame(self);area.pack(fill="both",expand=True)
-        self.tree=self.make_tree(area,[("id","ID",45),("bill","Bill No.",150),("student","Student",160),("course","Course",170),("period","Period",85),("issue","Issue",90),("due","Due",90),("amount","Total",90),("paid","Paid",90),("balance","Balance",90),("status","Status",100)])
-        self.tree.configure(selectmode="extended")
-        self.tree.bind("<<TreeviewSelect>>",self.on_select)
-        batch=ttk.Frame(self);batch.pack(fill="x",pady=(6,0))
-        ttk.Button(batch,text="Select All Bills",command=lambda:self.tree.selection_set(self.tree.get_children())).pack(side="left")
-        ttk.Button(batch,text="Clear Selection",command=lambda:self.tree.selection_remove(self.tree.selection())).pack(side="left",padx=5)
-        ttk.Button(batch,text="Pay Selected Bill(s)",style="Accent.TButton",command=self.open_payment).pack(side="left",padx=8)
-        ttk.Button(batch,text="📄 Consolidated Statement",command=self.open_consolidated_statement).pack(side="left",padx=4)
-        if getattr(self.app.services, "settings", None) and self.app.services.settings.get_bool("whatsapp_enabled", False):
-            ttk.Button(batch,text="💬 WhatsApp Bill",command=self.send_whatsapp_bill).pack(side="left",padx=4)
-        ttk.Button(batch,text="Open Batch PDF",command=self.open_batch_pdf).pack(side="right",padx=3)
-        ttk.Button(batch,text="Print Batch PDF",command=self.print_batch_pdf).pack(side="right",padx=3)
-        ttk.Button(batch,text="Batch POS Print",command=self.print_pos_batch).pack(side="right",padx=3)
-    def refresh(self):
-        rows=self.db.query("SELECT e.id,s.student_name,c.course_name FROM enrollments e JOIN students s ON s.id=e.student_id JOIN courses c ON c.id=e.course_id WHERE e.status='Active' ORDER BY s.student_name,c.course_name")
-        self.enrollment_map={f"{r['student_name']} - {r['course_name']} (#{r['id']})":r["id"] for r in rows};self.enrollment_combo["values"]=list(self.enrollment_map)
-        self.clear_tree(self.tree)
-        for b in self.app.services.billing.repository.list():self.tree.insert("","end",values=(b.id,b.bill_number,b.student_name,b.course_name,b.billing_period,b.issue_date,b.due_date,money(b.total_amount),money(b.paid_amount),money(b.total_amount-b.paid_amount),b.status))
-    def generate(self):
-        try:
-            enrollment_id=self.enrollment_map.get(self.vars["enrollment"].get())
-            if not enrollment_id:raise ValueError("Please select an enrollment.")
-            result=self.app.services.billing.generate(enrollment_id,self.vars["period"].get(),validate_date(self.vars["issue"].get(),"Issue date"),validate_date(self.vars["due"].get(),"Due date"),self.vars["remarks"].get())
-            self.selected_bill_id=result.bill.id;self.refresh()
-            messagebox.showinfo("Bill Generated" if result.created else "Already Generated",f"Bill {result.bill.bill_number}\nAmount due: {money(result.bill.total_amount)}" if result.created else f"A bill already exists for this enrollment and period:\n{result.bill.bill_number}",parent=self)
-        except Exception as exc:self.show_error(exc)
-    def on_select(self,_event=None):
-        selected=self.tree.selection()
-        if selected:self.selected_bill_id=int(self.tree.item(selected[0],"values")[0])
-    def selected_bill(self):
-        if not self.selected_bill_id:raise ValueError("Select or generate a bill first.")
-        return self.app.services.billing.repository.get(self.selected_bill_id)
-    def selected_bills(self):
-        selected=self.tree.selection()
-        if not selected:raise ValueError("Select one or more bills first.")
-        return [self.app.services.billing.repository.get(int(self.tree.item(item,"values")[0])) for item in selected]
-    def open_payment(self):
-        try:
-            bills = self.selected_bills()
-        except Exception:
-            try:
-                bills = [self.selected_bill()]
-            except Exception as exc:
-                self.show_error(exc)
-                return
+    def __init__(self, parent, app):
+        super().__init__(parent, app)
+        self.enrollment_map = {}
+        self.selected_bill_id = None
+        self.all_bills = []
 
-        if not bills:
-            self.show_error(ValueError("Select at least one bill to pay."))
-            return
+        ttk.Label(self, text="Student Due Bills & Credit Management", style="Title.TLabel").pack(anchor="w")
 
-        student_names = {b.student_name for b in bills}
-        if len(student_names) > 1:
-            self.show_error(ValueError("All selected bills must belong to the same student for a combined payment.\nPlease select bills belonging to a single student."))
-            return
-
-        total_remaining = sum(max(Decimal("0"), b.total_amount - b.paid_amount) for b in bills)
-        if total_remaining <= 0:
-            self.show_error(ValueError("All selected bills are already fully paid."))
-            return
-
-        accounts = self.db.query("SELECT id,account_name,account_type FROM accounts WHERE status='Active' ORDER BY account_name")
-        account_map = {f"{r['account_name']} ({r['account_type']})": r["id"] for r in accounts}
-        if not account_map:
-            self.show_error(ValueError("Create an active payment account first."))
-            return
-
-        student_name = bills[0].student_name
-        is_multi = len(bills) > 1
-
-        dialog = tk.Toplevel(self)
-        dialog.title(f"Combined Payment ({len(bills)} Bills)" if is_multi else "Quick Bill Payment")
-        dialog.transient(self.winfo_toplevel())
-        dialog.grab_set()
-        dialog.resizable(False, False)
-
-        panel_title = f"{student_name} — {len(bills)} Bills Combined" if is_multi else f"{student_name} - {bills[0].bill_number}"
-        panel = ttk.LabelFrame(dialog, text=panel_title, padding=14)
-        panel.pack(fill="both", expand=True, padx=12, pady=12)
-
-        cur_row = 0
-        if is_multi:
-            bill_summary_lines = []
-            for b in bills:
-                b_rem = max(Decimal("0"), b.total_amount - b.paid_amount)
-                bill_summary_lines.append(f"• {b.bill_number} ({b.billing_period}): Due {money(b_rem)}")
-            ttk.Label(panel, text="\n".join(bill_summary_lines), justify="left").grid(row=cur_row, column=0, columnspan=2, sticky="w", pady=(0, 6))
-            cur_row += 1
-        else:
-            ttk.Label(panel, text=f"Course: {bills[0].course_name}    Period: {bills[0].billing_period}").grid(row=cur_row, column=0, columnspan=2, sticky="w", pady=(0, 8))
-            cur_row += 1
-
-        ttk.Label(panel, text=f"Total balance due: {money(total_remaining)}", style="Card.TLabel").grid(row=cur_row, column=0, columnspan=2, sticky="w", pady=(0, 4))
-        cur_row += 1
-
-        ttk.Label(panel, text="💡 Payment automatically settles older bills first.\nAny extra amount is credited as student advance.", foreground="#0369A1", font=("Segoe UI", 8, "italic")).grid(row=cur_row, column=0, columnspan=2, sticky="w", pady=(0, 10))
-        cur_row += 1
-
-        values = {
-            "amount": tk.StringVar(value=str(total_remaining)),
-            "discount": tk.StringVar(value="0"),
-            "date": tk.StringVar(value=today_iso()),
-            "account": tk.StringVar(value=next(iter(account_map))),
-            "method": tk.StringVar(value="Cash"),
-            "receipt": tk.StringVar(),
+        # Top Bill Generation Form
+        form = self.create_form_dialog("Generate Bill", padding=8)
+        form.pack(fill="x", pady=(4, 6))
+        self.vars = {
+            "enrollment": tk.StringVar(),
+            "period": tk.StringVar(value=current_month()),
+            "issue": tk.StringVar(value=today_iso()),
+            "due": tk.StringVar(value=add_days(today_iso(), 7)),
             "remarks": tk.StringVar(),
         }
-        fb = FormBuilder(panel, start_row=cur_row)
-        fb.entry("Payment Amount *", values["amount"])
-        fb.entry("Discount Amount", values["discount"])
-        fb.entry("Payment Date *", values["date"])
-        fb.combo("Payment Account *", values["account"], account_map)
-        fb.combo("Payment Method", values["method"], ["Cash", "Bank", "Wallet", "Other"])
-        fb.entry("Receipt No.", values["receipt"])
-        fb.entry("Remarks", values["remarks"])
+        fb = FormBuilder(form)
+        self.enrollment_combo = fb.combo("Enrollment *", self.vars["enrollment"], [], searchable=True)
+        fb.entry("Billing Period *", self.vars["period"])
+        fb.entry("Issue Date *", self.vars["issue"])
+        fb.entry("Due Date *", self.vars["due"])
+        fb.entry("Remarks", self.vars["remarks"])
+        actions = ttk.Frame(form, style="Form.TFrame")
+        actions.grid(row=0, column=2, rowspan=5, padx=12, sticky="n")
+        ttk.Button(actions, text="Generate Due Bill", command=self.generate).pack(fill="x", pady=2)
+        ttk.Button(actions, text="⚡ Auto-Invoicing...", style="Accent.TButton", command=self.open_auto_invoicing).pack(fill="x", pady=2)
+        ttk.Button(actions, text="Generate Multiple...", command=self.open_bulk_generator).pack(fill="x", pady=2)
+        ttk.Button(actions, text="Create / Open PDF", command=self.create_pdf).pack(fill="x", pady=2)
+        ttk.Button(actions, text="Print PDF (Normal Printer)", command=self.print_pdf).pack(fill="x", pady=2)
+        ttk.Button(actions, text="Print POS Receipt", command=self.print_pos).pack(fill="x", pady=2)
+        if getattr(self.app.services, "settings", None) and self.app.services.settings.get_bool("whatsapp_enabled", False):
+            ttk.Button(actions, text="💬 WhatsApp Bill", style="Accent.TButton", command=self.send_whatsapp_bill).pack(fill="x", pady=2)
 
-        def save_payment():
-            try:
-                amount = parse_amount(values["amount"].get() or "0", "Payment")
-                discount = parse_amount(values["discount"].get() or "0", "Discount")
-                pay_date = validate_date(values["date"].get(), "Payment date")
-                acc_id = account_map.get(values["account"].get())
-                method = values["method"].get()
-                receipt = values["receipt"].get().strip()
-                remarks = values["remarks"].get().strip()
+        # Quick Filter & Search Bar
+        filter_box = ttk.LabelFrame(self, text="Filter & Quick Search", padding=(8, 4))
+        filter_box.pack(fill="x", pady=(0, 6))
 
-                result = self.app.services.billing.pay_bills(
-                    [b.id for b in bills],
-                    amount,
-                    pay_date,
-                    acc_id,
-                    method,
-                    receipt,
-                    remarks,
-                    discount,
-                    allow_advance=True,
-                )
-                dialog.destroy()
-                self.app.refresh_all()
+        filter_row = ttk.Frame(filter_box)
+        filter_row.pack(fill="x")
 
-                settled_count = len(result.get("updated_bills", []))
-                adv = result.get("advance_amount", Decimal("0"))
-                adv_msg = f"\nAdvance credit recorded: {money(adv)} (Surplus)" if adv > 0 else ""
-                info_msg = (
-                    f"Payment: {money(amount)}\n"
-                    f"Discount: {money(discount)}\n"
-                    f"Bills settled / updated: {settled_count}{adv_msg}"
-                )
+        ttk.Label(filter_row, text="Status Filter:", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 4))
+        self.filter_status_var = tk.StringVar(value="Pending Dues Only (Credit)")
+        self.status_combo = ttk.Combobox(
+            filter_row,
+            textvariable=self.filter_status_var,
+            values=["Pending Dues Only (Credit)", "Overdue (2+ Months)", "Fully Paid", "All Bills"],
+            state="readonly",
+            width=22,
+        )
+        self.status_combo.pack(side="left", padx=(0, 10))
+        self.status_combo.bind("<<ComboboxSelected>>", self.on_filter_changed)
 
-                first_txn_id = result.get("transaction_ids", [None])[0]
-                wa_enabled = getattr(self.app.services, "settings", None) and self.app.services.settings.get_bool("whatsapp_enabled", False)
-                if wa_enabled:
-                    ans = messagebox.askyesno("Payment Saved", f"{info_msg}\n\nWould you like to send a payment receipt via WhatsApp?", parent=self)
-                    if ans and first_txn_id:
-                        self.send_whatsapp_payment_receipt(first_txn_id)
-                else:
-                    sms_note = "\n\nAutomated SMS receipt has been queued." if getattr(self.app.services, "settings", None) and self.app.services.settings.get_bool("sms_enabled", False) else ""
-                    messagebox.showinfo("Payment Saved", f"{info_msg}{sms_note}", parent=self)
-            except Exception as exc:
-                messagebox.showerror("Payment Error", str(exc), parent=dialog)
+        ttk.Label(filter_row, text="Period:", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 4))
+        self.filter_period_var = tk.StringVar(value="All Periods")
+        self.period_combo = ttk.Combobox(
+            filter_row,
+            textvariable=self.filter_period_var,
+            values=["All Periods"],
+            state="readonly",
+            width=13,
+        )
+        self.period_combo.pack(side="left", padx=(0, 10))
+        self.period_combo.bind("<<ComboboxSelected>>", self.on_filter_changed)
 
-        ttk.Button(panel, text="Receive Payment", style="Accent.TButton", command=save_payment).grid(row=fb.row, column=1, sticky="e", pady=(12, 0))
+        ttk.Label(filter_row, text="🔍 Search:", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 4))
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", self.on_filter_changed)
+        search_entry = ttk.Entry(filter_row, textvariable=self.search_var, width=22)
+        search_entry.pack(side="left", padx=(0, 8))
+
+        ttk.Button(filter_row, text="Reset Filters", command=self.reset_filters).pack(side="left", padx=(0, 10))
+
+        self.summary_label = ttk.Label(filter_row, text="", font=("Segoe UI", 9, "bold"), foreground="#0369A1")
+        self.summary_label.pack(side="right")
+
+        # Two-Tab Notebook: 1. Student Credit / Defaulters Summary  2. Detailed Bills List
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill="both", expand=True)
+
+        # Tab 1: Student Credit / Defaulters Summary
+        self.tab_student = ttk.Frame(self.notebook, padding=4)
+        self.notebook.add(self.tab_student, text="  👥 Student Credit Summary (Defaulters)  ")
+
+        student_area = ttk.Frame(self.tab_student)
+        student_area.pack(fill="both", expand=True)
+        self.student_tree = self.make_tree(
+            student_area,
+            [
+                ("id", "Student ID", 65),
+                ("student", "Student Name", 170),
+                ("contact", "Contact / Phone", 110),
+                ("courses", "Enrolled Course(s)", 200),
+                ("unpaid_count", "Unpaid Months", 100),
+                ("periods", "Pending Periods", 180),
+                ("total_due", "Total Overdue (Rs.)", 125),
+            ],
+        )
+        self.student_tree.configure(selectmode="browse")
+        self.student_tree.bind("<Double-1>", self.on_student_double_click)
+
+        student_toolbar = ttk.Frame(self.tab_student)
+        student_toolbar.pack(fill="x", pady=(6, 0))
+        ttk.Button(student_toolbar, text="📄 Print Consolidated Statement", style="Accent.TButton", command=self.open_student_statement).pack(side="left", padx=(0, 6))
+        ttk.Button(student_toolbar, text="💳 Settle All Dues", style="Accent.TButton", command=self.open_student_payment).pack(side="left", padx=4)
+        if getattr(self.app.services, "settings", None) and self.app.services.settings.get_bool("whatsapp_enabled", False):
+            ttk.Button(student_toolbar, text="💬 WhatsApp Due Notice", command=self.send_student_whatsapp).pack(side="left", padx=4)
+        ttk.Button(student_toolbar, text="🔍 View Detailed Bills", command=self.view_student_bills_in_detailed_tab).pack(side="left", padx=6)
+        ttk.Label(student_toolbar, text="💡 Double-click a student to print their consolidated statement", font=("Segoe UI", 8, "italic"), foreground="#64748B").pack(side="right")
+
+        # Tab 2: Detailed Bills List
+        self.tab_detailed = ttk.Frame(self.notebook, padding=4)
+        self.notebook.add(self.tab_detailed, text="  📋 Detailed Bills List  ")
+
+        area = ttk.Frame(self.tab_detailed)
+        area.pack(fill="both", expand=True)
+        self.tree = self.make_tree(
+            area,
+            [
+                ("id", "ID", 45),
+                ("bill", "Bill No.", 150),
+                ("student", "Student", 160),
+                ("course", "Course", 170),
+                ("period", "Period", 85),
+                ("issue", "Issue", 90),
+                ("due", "Due", 90),
+                ("amount", "Total", 90),
+                ("paid", "Paid", 90),
+                ("balance", "Balance", 90),
+                ("status", "Status", 100),
+            ],
+        )
+        self.tree.configure(selectmode="extended")
+        self.tree.bind("<<TreeviewSelect>>", self.on_select)
+
+        batch = ttk.Frame(self.tab_detailed)
+        batch.pack(fill="x", pady=(6, 0))
+        ttk.Button(batch, text="Select All Bills", command=lambda: self.tree.selection_set(self.tree.get_children())).pack(side="left")
+        ttk.Button(batch, text="Clear Selection", command=lambda: self.tree.selection_remove(self.tree.selection())).pack(side="left", padx=5)
+        ttk.Button(batch, text="Pay Selected Bill(s)", style="Accent.TButton", command=self.open_payment).pack(side="left", padx=8)
+        ttk.Button(batch, text="📄 Consolidated Statement", command=self.open_consolidated_statement).pack(side="left", padx=4)
+        if getattr(self.app.services, "settings", None) and self.app.services.settings.get_bool("whatsapp_enabled", False):
+            ttk.Button(batch, text="💬 WhatsApp Bill", command=self.send_whatsapp_bill).pack(side="left", padx=4)
+        ttk.Button(batch, text="Open Batch PDF", command=self.open_batch_pdf).pack(side="right", padx=3)
+        ttk.Button(batch, text="Print Batch PDF", command=self.print_batch_pdf).pack(side="right", padx=3)
+        ttk.Button(batch, text="Batch POS Print", command=self.print_pos_batch).pack(side="right", padx=3)
+
+    def on_filter_changed(self, *_args):
+        self.apply_filters()
+
+    def reset_filters(self):
+        self.filter_status_var.set("Pending Dues Only (Credit)")
+        self.filter_period_var.set("All Periods")
+        self.search_var.set("")
+        self.apply_filters()
+
+    def refresh(self):
+        rows = self.db.query(
+            "SELECT e.id,s.student_name,c.course_name FROM enrollments e "
+            "JOIN students s ON s.id=e.student_id JOIN courses c ON c.id=e.course_id "
+            "WHERE e.status='Active' ORDER BY s.student_name,c.course_name"
+        )
+        self.enrollment_map = {f"{r['student_name']} - {r['course_name']} (#{r['id']})": r["id"] for r in rows}
+        self.enrollment_combo["values"] = list(self.enrollment_map)
+
+        self.all_bills = self.app.services.billing.repository.list()
+        periods = sorted({b.billing_period for b in self.all_bills if b.billing_period}, reverse=True)
+        self.period_combo["values"] = ["All Periods", *periods]
+        self.apply_filters()
+
+    def apply_filters(self):
+        status_choice = self.filter_status_var.get()
+        period_choice = self.filter_period_var.get()
+        search_kw = self.search_var.get().strip().lower()
+
+        # 1. Update Student Credit Summary Tree
+        min_months = 2 if "2+" in status_choice else 1
+        summaries = self.app.services.billing.get_student_dues_summary(
+            min_unpaid_months=min_months,
+            search=search_kw,
+        )
+        self.clear_tree(self.student_tree)
+        total_credit_due = Decimal("0")
+        for s in summaries:
+            total_credit_due += Decimal(str(s["total_due"]))
+            self.student_tree.insert(
+                "",
+                "end",
+                values=(
+                    s["student_id"],
+                    s["student_name"],
+                    s["contact"] or "—",
+                    s["course_name"],
+                    f"{s['unpaid_bills_count']} month(s)",
+                    s["periods_display"],
+                    money(Decimal(str(s["total_due"]))),
+                ),
+            )
+
+        # 2. Update Detailed Bills Tree
+        self.clear_tree(self.tree)
+        multi_unpaid_students = {s["student_id"] for s in summaries if s["unpaid_bills_count"] >= 2}
+
+        filtered_bills = []
+        for b in self.all_bills:
+            rem = b.total_amount - b.paid_amount
+            # Status filter
+            if "Pending" in status_choice and rem <= Decimal("0"):
+                continue
+            if "Overdue" in status_choice and b.student_id not in multi_unpaid_students:
+                continue
+            if "Fully Paid" in status_choice and rem > Decimal("0"):
+                continue
+
+            # Period filter
+            if period_choice != "All Periods" and b.billing_period != period_choice:
+                continue
+
+            # Search filter
+            if search_kw:
+                match_content = f"{b.bill_number} {b.student_name} {b.course_name} {getattr(b, 'contact', '')}".lower()
+                if search_kw not in match_content:
+                    continue
+
+            filtered_bills.append(b)
+            self.tree.insert(
+                "",
+                "end",
+                values=(
+                    b.id,
+                    b.bill_number,
+                    b.student_name,
+                    b.course_name,
+                    b.billing_period,
+                    b.issue_date,
+                    b.due_date,
+                    money(b.total_amount),
+                    money(b.paid_amount),
+                    money(rem),
+                    b.status,
+                ),
+            )
+
+        self.summary_label.configure(
+            text=f"Credit Defaulters: {len(summaries)} student(s) · Total Due: {money(total_credit_due)} | Bills Listed: {len(filtered_bills)}"
+        )
+
+    def generate(self):
+        try:
+            enrollment_id = self.enrollment_map.get(self.vars["enrollment"].get())
+            if not enrollment_id:
+                raise ValueError("Please select an enrollment.")
+            result = self.app.services.billing.generate(
+                enrollment_id,
+                self.vars["period"].get(),
+                validate_date(self.vars["issue"].get(), "Issue date"),
+                validate_date(self.vars["due"].get(), "Due date"),
+                self.vars["remarks"].get(),
+            )
+            self.selected_bill_id = result.bill.id
+            self.refresh()
+            messagebox.showinfo(
+                "Bill Generated" if result.created else "Already Generated",
+                f"Bill {result.bill.bill_number}\nAmount due: {money(result.bill.total_amount)}"
+                if result.created
+                else f"A bill already exists for this enrollment and period:\n{result.bill.bill_number}",
+                parent=self,
+            )
+        except Exception as exc:
+            self.show_error(exc)
+
+    def on_select(self, _event=None):
+        selected = self.tree.selection()
+        if selected:
+            self.selected_bill_id = int(self.tree.item(selected[0], "values")[0])
+
+    def on_student_double_click(self, _event=None):
+        self.open_student_statement()
+
+    def open_student_statement(self):
+        sel = self.student_tree.selection()
+        if not sel:
+            messagebox.showwarning("Select Student", "Please select a student from the list first.", parent=self)
+            return
+        item = self.student_tree.item(sel[0])
+        student_id = int(item["values"][0])
+        try:
+            path = self.app.services.billing.create_consolidated_statement_pdf(student_id=student_id)
+            os.startfile(path)
+        except Exception as exc:
+            self.show_error(exc)
+
+    def open_student_payment(self):
+        sel = self.student_tree.selection()
+        if not sel:
+            messagebox.showwarning("Select Student", "Please select a student from the list first.", parent=self)
+            return
+        item = self.student_tree.item(sel[0])
+        student_id = int(item["values"][0])
+        bills = self.app.services.billing.repository.get_unpaid_bills_for_student(student_id)
+        if not bills:
+            messagebox.showinfo("Settled", "This student has no pending unpaid bills.", parent=self)
+            return
+        self._launch_payment_dialog(bills)
+
+    def view_student_bills_in_detailed_tab(self):
+        sel = self.student_tree.selection()
+        if not sel:
+            messagebox.showwarning("Select Student", "Please select a student from the list first.", parent=self)
+            return
+        item = self.student_tree.item(sel[0])
+        student_name = str(item["values"][1])
+        self.search_var.set(student_name)
+        self.notebook.select(self.tab_detailed)
+
+    def send_student_whatsapp(self):
+        sel = self.student_tree.selection()
+        if not sel:
+            messagebox.showwarning("Select Student", "Please select a student from the list first.", parent=self)
+            return
+        item = self.student_tree.item(sel[0])
+        student_id = int(item["values"][0])
+        bills = self.app.services.billing.repository.get_unpaid_bills_for_student(student_id)
+        if not bills:
+            messagebox.showinfo("Settled", "This student has no pending unpaid bills.", parent=self)
+            return
+        latest_bill = bills[-1]
+        self.selected_bill_id = latest_bill.id
+        self.send_whatsapp_bill()
+
+    def selected_bill(self):
+        if not self.selected_bill_id:
+            raise ValueError("Select or generate a bill first.")
+        return self.app.services.billing.repository.get(self.selected_bill_id)
+
+    def selected_bills(self):
+        selected = self.tree.selection()
+        if not selected:
+            raise ValueError("Select one or more bills first.")
+        return [self.app.services.billing.repository.get(int(self.tree.item(item, "values")[0])) for item in selected]
+
     def create_pdf(self):
         try:
             path=self.app.services.billing.create_pdf(self.selected_bill());os.startfile(path)

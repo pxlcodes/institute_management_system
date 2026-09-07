@@ -2024,25 +2024,55 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
         return {"ok": True}
 
     @app.get("/api/bills")
-    def bills(user: UserSession = Depends(session)):
+    def bills(
+        status: str = "",
+        period: str = "",
+        student_id: Optional[int] = None,
+        user: UserSession = Depends(session),
+    ):
         if not (auth.has_permission(user, "billing.manage") or auth.has_permission(user, "portal.student")):
             raise HTTPException(status_code=403, detail="You do not have permission for this action.")
         result = []
         is_student = user.role == "student" and user.student_id
+        target_student_id = user.student_id if is_student else student_id
+        status_filter = status.strip().lower()
+
         for bill in services.billing.repository.list():
-            if is_student and bill.student_id != user.student_id:
+            if target_student_id and bill.student_id != target_student_id:
                 continue
+            if period and bill.billing_period != period:
+                continue
+            balance = float(bill.total_amount - bill.paid_amount)
+            if status_filter in ("pending", "unpaid", "due") and balance <= 0:
+                continue
+            if status_filter in ("paid", "settled") and balance > 0:
+                continue
+
             result.append({
                 "id": bill.id, "bill_number": bill.bill_number, "enrollment_id": bill.enrollment_id,
                 "student_id": bill.student_id,
                 "student_name": bill.student_name, "course_name": bill.course_name,
+                "contact": getattr(bill, "contact", ""),
                 "billing_period": bill.billing_period, "issue_date": bill.issue_date,
                 "due_date": bill.due_date, "subtotal": float(bill.subtotal),
                 "discount": float(bill.discount), "total_amount": float(bill.total_amount),
-                "paid_amount": float(bill.paid_amount), "balance": float(bill.total_amount - bill.paid_amount),
+                "paid_amount": float(bill.paid_amount), "balance": balance,
                 "status": bill.status,
             })
         return result
+
+    @app.get("/api/bills/student-dues-summary")
+    def student_dues_summary(
+        min_unpaid_months: int = 1,
+        search: str = "",
+        user: UserSession = Depends(session),
+    ):
+        if not (auth.has_permission(user, "billing.manage") or auth.has_permission(user, "portal.student")):
+            raise HTTPException(status_code=403, detail="You do not have permission for this action.")
+        summaries = services.billing.get_student_dues_summary(min_unpaid_months=min_unpaid_months, search=search)
+        if user.role == "student" and user.student_id:
+            summaries = [s for s in summaries if s["student_id"] == user.student_id]
+        return summaries
 
     @app.post("/api/bills/generate")
     def generate_bills(payload: BillGenerationInput, _user=Depends(require("billing.manage"))):

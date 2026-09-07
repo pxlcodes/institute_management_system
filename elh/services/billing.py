@@ -818,3 +818,68 @@ class BillingService:
             "VALUES (?, ?, ?, ?, ?, ?)",
             (int(bill_id), student_id, status, note.strip(), follow_up_date.strip() or None, user_id),
         )
+
+    def get_student_dues_summary(self, min_unpaid_months: int = 1, search: str = "") -> list[dict]:
+        """Group unpaid bills by student to give an immediate credit/defaulters summary."""
+        all_bills = self.repository.list()
+        grouped: dict[int, dict] = {}
+        for b in all_bills:
+            bal = b.total_amount - b.paid_amount
+            if bal <= Decimal("0"):
+                continue
+            sid = b.student_id
+            if sid not in grouped:
+                grouped[sid] = {
+                    "student_id": sid,
+                    "student_name": b.student_name,
+                    "contact": b.contact,
+                    "courses": set(),
+                    "periods": [],
+                    "total_due": Decimal("0"),
+                    "bills": [],
+                    "bill_ids": [],
+                    "earliest_due_date": b.due_date,
+                    "latest_due_date": b.due_date,
+                }
+            g = grouped[sid]
+            g["courses"].add(b.course_name)
+            g["periods"].append(b.billing_period)
+            g["total_due"] += bal
+            g["bills"].append(b)
+            g["bill_ids"].append(b.id)
+            if b.due_date < g["earliest_due_date"]:
+                g["earliest_due_date"] = b.due_date
+            if b.due_date > g["latest_due_date"]:
+                g["latest_due_date"] = b.due_date
+
+        results = []
+        search_lower = (search or "").strip().lower()
+        for sid, data in grouped.items():
+            unpaid_count = len(data["bills"])
+            if unpaid_count < min_unpaid_months:
+                continue
+            courses_str = ", ".join(sorted(data["courses"]))
+            periods_sorted = sorted(set(data["periods"]))
+            periods_str = ", ".join(periods_sorted)
+            if search_lower:
+                match_text = f"{data['student_name']} {data['contact']} {courses_str} {periods_str}".lower()
+                if search_lower not in match_text:
+                    continue
+            results.append({
+                "student_id": sid,
+                "student_name": data["student_name"],
+                "contact": data["contact"],
+                "course_name": courses_str,
+                "courses": sorted(data["courses"]),
+                "unpaid_bills_count": unpaid_count,
+                "periods": periods_sorted,
+                "periods_display": periods_str,
+                "total_due": float(data["total_due"]),
+                "bill_ids": data["bill_ids"],
+                "latest_bill_id": data["bills"][0].id if data["bills"] else None,
+                "earliest_due_date": data["earliest_due_date"],
+                "latest_due_date": data["latest_due_date"],
+            })
+
+        results.sort(key=lambda x: (-x["unpaid_bills_count"], -x["total_due"], x["student_name"].lower()))
+        return results
