@@ -96,6 +96,9 @@ class MySQLDatabase:
             ("salary_payouts", "working_hours", "DECIMAL(14,2) NOT NULL DEFAULT 0"),
             ("app_users", "display_name", "VARCHAR(255) NULL"),
             ("app_users", "email", "VARCHAR(255) NULL"),
+            ("app_users", "phone", "VARCHAR(50) NULL"),
+            ("app_users", "student_id", "INTEGER NULL"),
+            ("app_users", "teacher_id", "INTEGER NULL"),
             ("app_users", "must_change_password", "INTEGER NOT NULL DEFAULT 0"),
             ("app_users", "failed_attempts", "INTEGER NOT NULL DEFAULT 0"),
             ("app_users", "locked_until", "DATETIME NULL"),
@@ -108,6 +111,9 @@ class MySQLDatabase:
             ("settings", "data_type", "VARCHAR(50) NOT NULL DEFAULT 'text'"),
             ("settings", "description", "TEXT NULL"),
             ("settings", "updated_at", "DATETIME NULL"),
+            ("accounts", "bank_code", "VARCHAR(100) NULL"),
+            ("accounts", "is_billing_default", "INTEGER NOT NULL DEFAULT 0"),
+            ("accounts", "qr_payload", "TEXT NULL"),
         )
         for table, column, definition in migrations:
             row = self.query_one(
@@ -232,8 +238,9 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 ) ENGINE=InnoDB;
 CREATE TABLE IF NOT EXISTS app_users (
  id INTEGER AUTO_INCREMENT PRIMARY KEY, username VARCHAR(100) NOT NULL UNIQUE,
- display_name VARCHAR(255), email VARCHAR(255), password_hash VARCHAR(255) NOT NULL,
+ display_name VARCHAR(255), email VARCHAR(255), phone VARCHAR(50), password_hash VARCHAR(255) NOT NULL,
  role VARCHAR(30) NOT NULL, status VARCHAR(30) NOT NULL DEFAULT 'Active',
+ student_id INTEGER, teacher_id INTEGER,
  must_change_password INTEGER NOT NULL DEFAULT 0, failed_attempts INTEGER NOT NULL DEFAULT 0,
  locked_until DATETIME, last_login_at DATETIME, password_changed_at DATETIME,
  updated_at DATETIME,
@@ -288,7 +295,8 @@ CREATE TABLE IF NOT EXISTS students (
 ) ENGINE=InnoDB;
 CREATE TABLE IF NOT EXISTS accounts (
  id INTEGER AUTO_INCREMENT PRIMARY KEY, account_name VARCHAR(255) NOT NULL UNIQUE, account_type VARCHAR(100) NOT NULL,
- bank_name VARCHAR(255), account_number VARCHAR(100), account_holder VARCHAR(255), opening_balance DECIMAL(14,2) NOT NULL DEFAULT 0,
+ bank_name VARCHAR(255), bank_code VARCHAR(100), account_number VARCHAR(100), account_holder VARCHAR(255), opening_balance DECIMAL(14,2) NOT NULL DEFAULT 0,
+ is_billing_default TINYINT(1) NOT NULL DEFAULT 0, qr_payload TEXT,
  status VARCHAR(50) NOT NULL DEFAULT 'Active', remarks TEXT, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
 CREATE TABLE IF NOT EXISTS counterparties (
@@ -418,6 +426,15 @@ CREATE TABLE IF NOT EXISTS attendance_alert_reviews (
  FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE,
  FOREIGN KEY(reviewed_by_user_id) REFERENCES app_users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS payment_alert_reviews (
+ id INTEGER AUTO_INCREMENT PRIMARY KEY, bill_id INTEGER NOT NULL,
+ student_id INTEGER NOT NULL, review_status VARCHAR(50) NOT NULL,
+ note TEXT, follow_up_date VARCHAR(30),
+ reviewed_by_user_id INTEGER NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ FOREIGN KEY(bill_id) REFERENCES due_bills(id) ON DELETE CASCADE,
+ FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE,
+ FOREIGN KEY(reviewed_by_user_id) REFERENCES app_users(id) ON DELETE SET NULL
+) ENGINE=InnoDB;
 CREATE TABLE IF NOT EXISTS sms_event_templates (
  event_key VARCHAR(50) PRIMARY KEY, event_name VARCHAR(100) NOT NULL,
  enabled INTEGER NOT NULL DEFAULT 1, template_text TEXT NOT NULL,
@@ -467,5 +484,25 @@ CREATE TABLE IF NOT EXISTS due_bill_items (
  amount DECIMAL(14,2) NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
  UNIQUE KEY uq_bill_billing_month(bill_id,billing_month),
  FOREIGN KEY(bill_id) REFERENCES due_bills(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS website_cms (
+ section_key VARCHAR(100) PRIMARY KEY,
+ section_title VARCHAR(255) NOT NULL,
+ content_json MEDIUMTEXT NOT NULL,
+ updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ updated_by VARCHAR(100)
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS website_inquiries (
+ id INTEGER AUTO_INCREMENT PRIMARY KEY,
+ full_name VARCHAR(255) NOT NULL,
+ phone VARCHAR(50) NOT NULL,
+ email VARCHAR(100),
+ grade VARCHAR(100),
+ course_interest VARCHAR(255),
+ message TEXT,
+ status VARCHAR(50) NOT NULL DEFAULT 'New',
+ staff_notes TEXT,
+ created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB
 """

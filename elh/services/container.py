@@ -10,6 +10,7 @@ from .attendance_poller import AttendancePoller
 from .people import StudentService
 from .printing import PrintingService
 from .billing import BillingService
+from .recurring_billing import RecurringBillingService
 from elh.repositories import BillingRepository
 from .reports import ReportsService
 from .certificates import CertificateService
@@ -18,6 +19,8 @@ from .enrollments import EnrollmentService
 from .notifications import NotificationService
 from elh.core.settings import SettingsService
 from .staff_finance import StaffFinanceService
+from .automation import AutomationScheduler
+from .cms import CmsService
 
 
 @dataclass(frozen=True)
@@ -29,9 +32,12 @@ class ServiceContainer:
     attendance_poller: AttendancePoller
     printing: PrintingService
     billing: BillingService
+    recurring_billing: RecurringBillingService
     reports: ReportsService
     certificates: CertificateService
     staff_finance: StaffFinanceService
+    automation: AutomationScheduler
+    cms: CmsService
 
     @classmethod
     def build(cls, config: AppConfig, db) -> "ServiceContainer":
@@ -53,10 +59,15 @@ class ServiceContainer:
             "min_window_height": str(config.min_window_height),
             "allow_negative_balance": str(config.allow_negative_balance).lower(),
             "health_stale_backup_hours": str(config.health_stale_backup_hours),
+            "gemini_api_key": config.gemini_api_key,
+            "ai_provider": config.ai_provider,
+            "ai_model": config.ai_model,
         }
         for key, value in runtime_defaults.items():
             if key not in existing_settings:
                 settings.set(key, value)
+            elif key == "gemini_api_key" and config.gemini_api_key and not settings.get("gemini_api_key"):
+                settings.set("gemini_api_key", config.gemini_api_key)
         profile = db.query_one(
             "SELECT company_name,principal_name FROM company_profile WHERE id=1"
         )
@@ -93,6 +104,18 @@ class ServiceContainer:
             interval_seconds=config.attendance_poll_interval_seconds,
             enabled=config.attendance_auto_poll and config.attendance_driver != "disabled",
         )
+        billing_service = BillingService(
+            BillingRepository(db), printing, company_name, currency_symbol, notifications, settings
+        )
+        recurring_billing = RecurringBillingService(db, billing_service, settings)
+        automation = AutomationScheduler(
+            db=db,
+            config=config,
+            settings=settings,
+            notifications=notifications,
+            recurring_billing=recurring_billing,
+            attendance=attendance_service,
+        )
         container = cls(
             students=StudentService(StudentRepository(db), config.date_format, notifications),
             enrollments=EnrollmentService(db, notifications, config.date_format),
@@ -100,13 +123,18 @@ class ServiceContainer:
             attendance=attendance_service,
             attendance_poller=attendance_poller,
             printing=printing,
-            billing=BillingService(BillingRepository(db), printing, company_name, currency_symbol, notifications),
-            reports=ReportsService(db, company_name, currency_symbol, printing),
+            billing=billing_service,
+            recurring_billing=recurring_billing,
+            reports=ReportsService(db, company_name, currency_symbol, printing, settings),
             certificates=CertificateService(CertificateRepository(db), config, notifications),
             staff_finance=StaffFinanceService(db),
+            automation=automation,
+            cms=CmsService(db),
         )
         if settings.get_bool("sms_enabled", False):
             notifications.dispatch_async()
         if config.attendance_driver != "disabled" and config.attendance_auto_poll:
             attendance_poller.start()
+        # Start background automation scheduler (monthly invoicing, daily absence SMS, backups)
+        automation.start()
         return container

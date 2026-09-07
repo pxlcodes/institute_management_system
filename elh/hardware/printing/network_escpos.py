@@ -29,8 +29,23 @@ class NetworkEscPosPrinter:
         lines.append("-" * self.width)
         if receipt.show_amounts:
             lines.append(f"TOTAL {receipt.total:.2f}".rjust(self.width))
-        lines.extend(["", receipt.footer.center(self.width), "", "", "", "", "", ""])
-        return b"\x1b@" + "\n".join(lines).encode("utf-8", errors="replace") + b"\x1dV\x00"
+
+        text_part = b"\x1b@" + "\n".join(lines).encode("utf-8", errors="replace") + b"\n"
+
+        qr_part = b""
+        if getattr(receipt, "qr_payload", None):
+            from elh.core.payment_qr import PaymentQrEngine
+            caption = getattr(receipt, "qr_caption", "") or "Scan to Pay via Fonepay / eSewa"
+            qr_part += b"\n" + caption.center(self.width).encode("utf-8", errors="replace") + b"\n\n"
+            qr_part += PaymentQrEngine.build_escpos_raster(
+                receipt.qr_payload,
+                printer_chars=self.width,
+            )
+            qr_part += b"\n"
+
+        footer_lines = ["", receipt.footer.center(self.width), "", "", "", "", "", ""]
+        footer_part = "\n".join(footer_lines).encode("utf-8", errors="replace") + b"\x1dV\x00"
+        return text_part + qr_part + footer_part
 
     def print_receipt(self, receipt: Receipt) -> None:
         try:

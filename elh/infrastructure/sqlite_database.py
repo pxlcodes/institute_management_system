@@ -20,6 +20,8 @@ def _sqlite_schema() -> str:
     schema = re.sub(r"VARCHAR\(\d+\)", "TEXT", schema)
     schema = re.sub(r"ENUM\([^)]*\)", "TEXT", schema)
     schema = schema.replace("DATETIME", "TEXT")
+    schema = schema.replace("MEDIUMTEXT", "TEXT")
+    schema = schema.replace("MEDIUMBLOB", "BLOB")
     schema = re.sub(r"UNIQUE KEY \w+\(([^)]+)\)", r"UNIQUE(\1)", schema)
     return schema
 
@@ -64,6 +66,9 @@ class SQLiteDatabase:
                 ("students", "class_level_id", "INTEGER"),
                 ("app_users", "display_name", "TEXT"),
                 ("app_users", "email", "TEXT"),
+                ("app_users", "phone", "TEXT"),
+                ("app_users", "student_id", "INTEGER"),
+                ("app_users", "teacher_id", "INTEGER"),
                 ("app_users", "must_change_password", "INTEGER NOT NULL DEFAULT 0"),
                 ("app_users", "failed_attempts", "INTEGER NOT NULL DEFAULT 0"),
                 ("app_users", "locked_until", "TEXT"),
@@ -80,6 +85,12 @@ class SQLiteDatabase:
                 ("settings", "data_type", "TEXT NOT NULL DEFAULT 'text'"),
                 ("settings", "description", "TEXT"),
                 ("settings", "updated_at", "TEXT"),
+                ("accounts", "bank_name", "TEXT"),
+                ("accounts", "bank_code", "TEXT"),
+                ("accounts", "account_number", "TEXT"),
+                ("accounts", "account_holder", "TEXT"),
+                ("accounts", "is_billing_default", "INTEGER NOT NULL DEFAULT 0"),
+                ("accounts", "qr_payload", "TEXT"),
             )
             for table, column, definition in migrations:
                 columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}

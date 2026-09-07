@@ -9,8 +9,8 @@ from elh.repositories import BillingRepository
 
 
 class BillingService:
-    def __init__(self,repository:BillingRepository,printing,app_title:str,currency_symbol:str,notifications=None):
-        self.repository=repository;self.printing=printing;self.app_title=app_title;self.currency_symbol=currency_symbol;self.notifications=notifications
+    def __init__(self,repository:BillingRepository,printing,app_title:str,currency_symbol:str,notifications=None,settings=None):
+        self.repository=repository;self.printing=printing;self.app_title=app_title;self.currency_symbol=currency_symbol;self.notifications=notifications;self.settings=settings
     def generate(self,enrollment_id:int,period:str,issue_date:str,due_date:str,remarks:str="") -> BillGenerationResult:
         period=validate_month(period.strip(),"Billing period")
         enrollment=self.repository.enrollment(enrollment_id)
@@ -135,21 +135,60 @@ class BillingService:
     def create_pdf(self,bill,output:Path|None=None)->Path:
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import A4
-        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.lib.styles import ParagraphStyle,getSampleStyleSheet
         from reportlab.lib.units import mm
-        from reportlab.platypus import SimpleDocTemplate,Paragraph,Spacer,Table,TableStyle
+        from reportlab.platypus import Paragraph,SimpleDocTemplate,Spacer,Table,TableStyle
+        from elh.core.payment_qr import PaymentQrEngine
         safe_bill_number=bill.bill_number.replace("/","-").replace("\\","-")
         output=output or ROOT_DIR/"output"/"pdf"/f"due_bill_{safe_bill_number}.pdf"
         output.parent.mkdir(parents=True,exist_ok=True)
         styles=getSampleStyleSheet();doc=SimpleDocTemplate(str(output),pagesize=A4,rightMargin=18*mm,leftMargin=18*mm,topMargin=16*mm,bottomMargin=16*mm)
         story=[Paragraph(self.app_title,styles["Title"]),Paragraph("STUDENT DUE BILL",styles["Heading2"]),Spacer(1,6*mm)]
         details=[["Bill Number",bill.bill_number,"Billing Period",bill.billing_period],["Student",bill.student_name,"Course",bill.course_name],["Issue Date",bill.issue_date,"Due Date",bill.due_date],["Status",bill.status,"",""]]
-        table=Table(details,colWidths=[30*mm,58*mm,30*mm,55*mm]);table.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.5,colors.grey),("BACKGROUND",(0,0),(0,-1),colors.HexColor("#EAF0F6")),("BACKGROUND",(2,0),(2,-1),colors.HexColor("#EAF0F6")),("VALIGN",(0,0),(-1,-1),"MIDDLE"),("PADDING",(0,0),(-1,-1),6)]));story.extend([table,Spacer(1,8*mm)])
+        table=Table(details,colWidths=[30*mm,58*mm,30*mm,55*mm]);table.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.5,colors.grey),("BACKGROUND",(0,0),(0,-1),colors.HexColor("#EAF0F6")),("BACKGROUND",(2,0),(2,-1),colors.HexColor("#EAF0F6")),("VALIGN",(0,0),(-1,-1),"MIDDLE"),("PADDING",(0,0),(-1,-1),6)]));story.extend([table,Spacer(1,7*mm)])
         amount_rows=[["Description","Amount"],[f"Course fee - {bill.course_name}",f"{self.currency_symbol} {bill.subtotal:,.2f}"]]
         if bill.discount>0:amount_rows.append(["Discount",f"- {self.currency_symbol} {bill.discount:,.2f}"])
         amount_rows.append(["TOTAL DUE",f"{self.currency_symbol} {bill.total_amount:,.2f}"])
-        amounts=Table(amount_rows,colWidths=[125*mm,48*mm])
-        amounts.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.5,colors.grey),("BACKGROUND",(0,0),(-1,0),colors.HexColor("#263B50")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("ALIGN",(1,1),(-1,-1),"RIGHT"),("FONTNAME",(0,-1),(-1,-1),"Helvetica-Bold"),("PADDING",(0,0),(-1,-1),7)]));story.extend([amounts,Spacer(1,14*mm),Paragraph("Please pay by the due date. Keep this bill for your records.",styles["BodyText"]),Spacer(1,12*mm),Paragraph("Authorized Signature: ______________________________",styles["BodyText"])]);doc.build(story)
+
+        qr_data = PaymentQrEngine.from_settings(
+            getattr(self, "settings", None),
+            bill.total_amount,
+            bill.bill_number,
+            bill.student_name,
+            bill.course_name,
+        )
+        show_qr = qr_data and (not getattr(self, "settings", None) or self.settings.get_bool("payment_qr_show_on_due_bills", True)) and bill.total_amount > 0
+
+        if show_qr:
+            amounts = Table(amount_rows, colWidths=[70 * mm, 38 * mm])
+            amounts.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.5,colors.grey),("BACKGROUND",(0,0),(-1,0),colors.HexColor("#263B50")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("ALIGN",(1,1),(-1,-1),"RIGHT"),("FONTNAME",(0,-1),(-1,-1),"Helvetica-Bold"),("PADDING",(0,0),(-1,-1),6)]))
+
+            qr_drawing = PaymentQrEngine.build_reportlab_flowable(qr_data, size_mm=35.0)
+            qr_caption_style = ParagraphStyle("QrCaption", parent=styles["BodyText"], fontSize=8, leading=10, alignment=1, textColor=colors.HexColor("#102A43"))
+            qr_sub_style = ParagraphStyle("QrSub", parent=styles["BodyText"], fontSize=7, leading=9, alignment=1, textColor=colors.HexColor("#64748B"))
+
+            qr_content = [
+                Paragraph(f"<b>📱 Scan to Pay ({qr_data.provider})</b>", qr_caption_style),
+                Spacer(1, 1.5 * mm),
+                qr_drawing,
+                Spacer(1, 1.5 * mm),
+                Paragraph(qr_data.instructions, qr_sub_style),
+            ]
+
+            combo_table = Table([[amounts, qr_content]], colWidths=[110 * mm, 64 * mm])
+            combo_table.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ALIGN", (1, 0), (1, 0), "CENTER"),
+                ("BOX", (1, 0), (1, 0), 0.6, colors.HexColor("#CBD5E1")),
+                ("BACKGROUND", (1, 0), (1, 0), colors.HexColor("#F8FAFC")),
+                ("PADDING", (1, 0), (1, 0), 5),
+            ]))
+            story.extend([combo_table, Spacer(1, 12 * mm)])
+        else:
+            amounts=Table(amount_rows,colWidths=[125*mm,48*mm])
+            amounts.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.5,colors.grey),("BACKGROUND",(0,0),(-1,0),colors.HexColor("#263B50")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("ALIGN",(1,1),(-1,-1),"RIGHT"),("FONTNAME",(0,-1),(-1,-1),"Helvetica-Bold"),("PADDING",(0,0),(-1,-1),7)]));story.extend([amounts,Spacer(1,14*mm)])
+
+        story.extend([Paragraph("Please pay by the due date. Keep this bill for your records.",styles["BodyText"]),Spacer(1,12*mm),Paragraph("Authorized Signature: ______________________________",styles["BodyText"])]);doc.build(story)
         self.repository.set_pdf(bill.id,str(output));return output
     def create_batch_pdf(self,bills:list,output:Path|None=None)->Path:
         if not bills:raise ValueError("Select at least one bill.")
@@ -158,6 +197,7 @@ class BillingService:
         from reportlab.lib.styles import ParagraphStyle,getSampleStyleSheet
         from reportlab.lib.units import mm
         from reportlab.platypus import HRFlowable,KeepTogether,PageBreak,Paragraph,SimpleDocTemplate,Spacer,Table,TableStyle
+        from elh.core.payment_qr import PaymentQrEngine
         safe_date=bills[0].issue_date.replace("/","-")
         output=output or ROOT_DIR/"output"/"pdf"/f"due_bills_batch_{safe_date}.pdf"
         output.parent.mkdir(parents=True,exist_ok=True);styles=getSampleStyleSheet();story=[]
@@ -165,16 +205,49 @@ class BillingService:
         compact_heading=ParagraphStyle("BatchHeading",parent=styles["Heading3"],fontSize=12,leading=14,alignment=1,spaceAfter=5)
         compact_body=ParagraphStyle("BatchBody",parent=styles["BodyText"],fontSize=9,leading=12,alignment=1)
         signature_style=ParagraphStyle("BatchSignature",parent=compact_body,alignment=1,fontSize=9)
+        qr_caption_style = ParagraphStyle("BatchQrCaption", parent=compact_body, fontSize=7, leading=8, alignment=1)
+
         for index,bill in enumerate(bills):
             if index and index%2==0:story.append(PageBreak())
             elif index:story.extend([Spacer(1,6*mm),HRFlowable(width="90%",thickness=1.2,color=colors.HexColor("#667788"),hAlign="CENTER"),Spacer(1,6*mm)])
             bill_story=[Paragraph(self.app_title,compact_title),Paragraph("STUDENT DUE BILL",compact_heading),Spacer(1,3*mm)]
             details=[["Bill Number",bill.bill_number,"Billing Period",bill.billing_period],["Student",bill.student_name,"Course",bill.course_name],["Issue Date",bill.issue_date,"Due Date",bill.due_date],["Status",bill.status,"",""]]
-            info=Table(details,colWidths=[27*mm,61*mm,27*mm,58*mm],hAlign="CENTER");info.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.5,colors.grey),("BACKGROUND",(0,0),(0,-1),colors.HexColor("#EAF0F6")),("BACKGROUND",(2,0),(2,-1),colors.HexColor("#EAF0F6")),("VALIGN",(0,0),(-1,-1),"MIDDLE"),("FONTSIZE",(0,0),(-1,-1),9),("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5)]));bill_story.extend([info,Spacer(1,5*mm)])
+            info=Table(details,colWidths=[27*mm,61*mm,27*mm,58*mm],hAlign="CENTER");info.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.5,colors.grey),("BACKGROUND",(0,0),(0,-1),colors.HexColor("#EAF0F6")),("BACKGROUND",(2,0),(2,-1),colors.HexColor("#EAF0F6")),("VALIGN",(0,0),(-1,-1),"MIDDLE"),("FONTSIZE",(0,0),(-1,-1),9),("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5)]));bill_story.extend([info,Spacer(1,4*mm)])
             amount_rows=[["Description","Amount"],[f"Course fee - {bill.course_name}",f"{self.currency_symbol} {bill.subtotal:,.2f}"]]
             if bill.discount>0:amount_rows.append(["Discount",f"- {self.currency_symbol} {bill.discount:,.2f}"])
             amount_rows.append(["TOTAL DUE",f"{self.currency_symbol} {bill.total_amount:,.2f}"])
-            amounts=Table(amount_rows,colWidths=[125*mm,48*mm],hAlign="CENTER");amounts.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.5,colors.grey),("BACKGROUND",(0,0),(-1,0),colors.HexColor("#263B50")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("ALIGN",(1,1),(-1,-1),"RIGHT"),("FONTNAME",(0,-1),(-1,-1),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,-1),9),("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5)]));bill_story.extend([amounts,Spacer(1,5*mm),Paragraph("Please pay by the due date. Keep this bill for your records.",compact_body),Spacer(1,6*mm),Paragraph("Authorized Signature:  ______________________________",signature_style),Spacer(1,3*mm)])
+
+            qr_data = PaymentQrEngine.from_settings(
+                getattr(self, "settings", None),
+                bill.total_amount,
+                bill.bill_number,
+                bill.student_name,
+                bill.course_name,
+            )
+            show_qr = qr_data and (not getattr(self, "settings", None) or self.settings.get_bool("payment_qr_show_on_due_bills", True)) and bill.total_amount > 0
+
+            if show_qr:
+                amounts = Table(amount_rows, colWidths=[65 * mm, 38 * mm], hAlign="CENTER")
+                amounts.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.5,colors.grey),("BACKGROUND",(0,0),(-1,0),colors.HexColor("#263B50")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("ALIGN",(1,1),(-1,-1),"RIGHT"),("FONTNAME",(0,-1),(-1,-1),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,-1),9),("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4)]))
+                qr_drawing = PaymentQrEngine.build_reportlab_flowable(qr_data, size_mm=30.0)
+                qr_cell = [
+                    Paragraph(f"<b>Pay ({qr_data.provider})</b>", qr_caption_style),
+                    Spacer(1, 1 * mm),
+                    qr_drawing,
+                ]
+                combo = Table([[amounts, qr_cell]], colWidths=[110 * mm, 64 * mm], hAlign="CENTER")
+                combo.setStyle(TableStyle([
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("ALIGN", (1, 0), (1, 0), "CENTER"),
+                    ("BOX", (1, 0), (1, 0), 0.5, colors.HexColor("#CBD5E1")),
+                    ("BACKGROUND", (1, 0), (1, 0), colors.HexColor("#F8FAFC")),
+                    ("PADDING", (1, 0), (1, 0), 4),
+                ]))
+                bill_story.extend([combo, Spacer(1, 4 * mm)])
+            else:
+                amounts=Table(amount_rows,colWidths=[125*mm,48*mm],hAlign="CENTER");amounts.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.5,colors.grey),("BACKGROUND",(0,0),(-1,0),colors.HexColor("#263B50")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("ALIGN",(1,1),(-1,-1),"RIGHT"),("FONTNAME",(0,-1),(-1,-1),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,-1),9),("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5)]));bill_story.extend([amounts,Spacer(1,5*mm)])
+
+            bill_story.extend([Paragraph("Please pay by the due date. Keep this bill for your records.",compact_body),Spacer(1,5*mm),Paragraph("Authorized Signature:  ______________________________",signature_style),Spacer(1,3*mm)])
             story.append(KeepTogether(bill_story))
         SimpleDocTemplate(str(output),pagesize=A4,rightMargin=18*mm,leftMargin=18*mm,topMargin=10*mm,bottomMargin=10*mm).build(story)
         for bill in bills:self.repository.set_pdf(bill.id,str(output))
@@ -183,21 +256,268 @@ class BillingService:
         if not bills:raise ValueError("Select at least one bill.")
         for bill in bills:self.print_pos(bill)
     def print_pos(self,bill):
+        from elh.core.payment_qr import PaymentQrEngine
         lines=[ReceiptLine(f"{bill.course_name} ({bill.billing_period})",bill.subtotal)]
         if bill.discount>0:lines.append(ReceiptLine("Discount",-bill.discount))
-        receipt=Receipt("ELH DUE BILL",bill.bill_number,bill.issue_date,bill.student_name,lines,f"DUE BY: {bill.due_date}")
+
+        qr_data = PaymentQrEngine.from_settings(
+            getattr(self, "settings", None),
+            bill.total_amount,
+            bill.bill_number,
+            bill.student_name,
+            bill.course_name,
+        )
+        qr_payload = PaymentQrEngine.build_payload(qr_data) if (qr_data and bill.total_amount > 0) else ""
+        qr_caption = f"Scan to Pay ({qr_data.provider})" if qr_data else ""
+
+        receipt=Receipt(
+            "ELH DUE BILL",bill.bill_number,bill.issue_date,bill.student_name,lines,f"DUE BY: {bill.due_date}",
+            qr_payload=qr_payload,qr_caption=qr_caption,
+        )
         self.printing.print_receipt(receipt);self.repository.mark_pos_printed(bill.id)
-    def pay(self,bill_id:int,amount:Decimal,payment_date:str,account_id:int|None,method:str,receipt_no:str="",remarks:str="",discount:Decimal=Decimal("0")):
-        amount=Decimal(str(amount));discount=Decimal(str(discount))
-        transaction_id=self.repository.record_payment(bill_id,amount,discount,payment_date,account_id,method,receipt_no,remarks)
-        bill=self.repository.get(bill_id)
-        if getattr(self,"notifications",None):
-            self.notifications.notify(
-                "bill_payment","student_transaction",transaction_id,
-                self.repository.student_contact(bill_id),
-                {"student_name":bill.student_name,"bill_number":bill.bill_number,
-                 "amount":f"{amount:,.2f}","discount":f"{discount:,.2f}",
-                 "balance":f"{max(Decimal('0'),bill.total_amount-bill.paid_amount):,.2f}",
-                 "payment_date":payment_date,"course_name":bill.course_name},
+    def pay_bills(
+        self,
+        bill_ids: list[int],
+        amount: Decimal,
+        payment_date: str,
+        account_id: int | None,
+        method: str,
+        receipt_no: str = "",
+        remarks: str = "",
+        discount: Decimal = Decimal("0"),
+        allow_advance: bool = True,
+    ) -> dict:
+        amount = Decimal(str(amount))
+        discount = Decimal(str(discount))
+        if hasattr(self.repository, "record_multi_payment"):
+            result = self.repository.record_multi_payment(
+                bill_ids,
+                amount,
+                discount,
+                payment_date,
+                account_id,
+                method,
+                receipt_no,
+                remarks,
+                allow_advance=allow_advance,
             )
-        return bill
+        else:
+            tid = self.repository.record_payment(
+                bill_ids[0] if bill_ids else 0,
+                amount,
+                discount,
+                payment_date,
+                account_id,
+                method,
+                receipt_no,
+                remarks,
+            )
+            result = {
+                "student_id": 0,
+                "student_name": "",
+                "transaction_ids": [tid] if tid else [],
+                "updated_bills": [],
+                "total_paid": amount,
+                "total_discount": discount,
+                "advance_amount": Decimal("0"),
+            }
+        if getattr(self, "notifications", None) and result.get("transaction_ids"):
+            first_tid = result["transaction_ids"][0]
+            contact = self.repository.student_contact(bill_ids[0]) if (bill_ids and hasattr(self.repository, "student_contact")) else ""
+            bill_numbers = ", ".join(u["bill_number"] for u in result.get("updated_bills", []))
+            first_bill = self.repository.get(bill_ids[0]) if bill_ids else None
+            course_title = (
+                getattr(first_bill, "course_name", "")
+                if (first_bill and len(bill_ids) == 1)
+                else f"{len(bill_ids)} bill(s)"
+            )
+            self.notifications.notify(
+                "bill_payment",
+                "student_transaction",
+                first_tid,
+                contact,
+                {
+                    "student_name": result.get("student_name", ""),
+                    "bill_number": bill_numbers or "Advance",
+                    "amount": f"{amount:,.2f}",
+                    "discount": f"{discount:,.2f}",
+                    "advance": f"{result.get('advance_amount', Decimal('0')):,.2f}",
+                    "balance": "0.00" if result.get("advance_amount", Decimal("0")) > 0 else (f"{max(Decimal('0'), first_bill.total_amount - first_bill.paid_amount):,.2f}" if hasattr(first_bill, "total_amount") else "0.00"),
+                    "payment_date": payment_date,
+                    "course_name": course_title,
+                },
+            )
+        return result
+
+    def pay(
+        self,
+        bill_id: int,
+        amount: Decimal,
+        payment_date: str,
+        account_id: int | None,
+        method: str,
+        receipt_no: str = "",
+        remarks: str = "",
+        discount: Decimal = Decimal("0"),
+        allow_advance: bool = True,
+    ):
+        amount = Decimal(str(amount))
+        discount = Decimal(str(discount))
+        self.pay_bills(
+            [bill_id],
+            amount,
+            payment_date,
+            account_id,
+            method,
+            receipt_no,
+            remarks,
+            discount,
+            allow_advance=allow_advance,
+        )
+        return self.repository.get(bill_id)
+
+    def payment_alerts(self, include_suppressed: bool = False, student_id: int | None = None) -> list[dict]:
+        """Return overdue payment alerts for unpaid bills whose due date has passed.
+        
+        Supports review status and follow-up suppression.
+        """
+        import nepali_datetime as nepali
+        from datetime import datetime, date
+
+        today_ad = datetime.now().date()
+        today_bs = nepali.date.today().strftime("%Y/%m/%d")
+
+        query = (
+            "SELECT b.id, b.bill_number, b.enrollment_id, e.student_id, s.student_name, "
+            "COALESCE(s.class_name, '') AS class_name, COALESCE(s.contact, '') AS contact, "
+            "COALESCE(s.parent_name, '') AS parent_name, c.course_name, b.billing_period, "
+            "b.issue_date, b.due_date, b.total_amount, b.paid_amount, "
+            "(b.total_amount - b.paid_amount) AS balance, b.status "
+            "FROM due_bills b "
+            "JOIN enrollments e ON e.id = b.enrollment_id "
+            "JOIN students s ON s.id = e.student_id "
+            "JOIN courses c ON c.id = e.course_id "
+            "WHERE b.status <> 'Paid' AND b.total_amount > b.paid_amount "
+        )
+        params: list = []
+        if student_id:
+            query += "AND e.student_id = ? "
+            params.append(student_id)
+
+        rows = self.repository.db.query(query, tuple(params))
+        if not rows:
+            return []
+
+        review_rows = self.repository.db.query(
+            "SELECT r.*, COALESCE(u.display_name, u.username, '') AS reviewer "
+            "FROM payment_alert_reviews r "
+            "LEFT JOIN app_users u ON u.id = r.reviewed_by_user_id "
+            "WHERE r.id IN (SELECT MAX(id) FROM payment_alert_reviews GROUP BY bill_id)"
+        )
+        reviews = {int(r["bill_id"]): r for r in review_rows}
+
+        alerts = []
+        for b in rows:
+            due_str = str(b["due_date"] or "").strip()
+            if not due_str:
+                continue
+
+            clean_due = due_str.replace("-", "/")
+            parts = clean_due.split("/")
+            is_overdue = False
+            days_overdue = 0
+            try:
+                if len(parts) >= 3 and int(parts[0]) > 2050:
+                    y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+                    due_ad = nepali.date(y, m, d).to_datetime_date()
+                    diff = (today_ad - due_ad).days
+                    if diff > 0:
+                        is_overdue = True
+                        days_overdue = diff
+                elif len(parts) >= 3:
+                    y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+                    due_ad = date(y, m, d)
+                    diff = (today_ad - due_ad).days
+                    if diff > 0:
+                        is_overdue = True
+                        days_overdue = diff
+            except Exception:
+                if clean_due < today_bs:
+                    is_overdue = True
+                    days_overdue = 1
+
+            if not is_overdue:
+                continue
+
+            review = reviews.get(int(b["id"]))
+            review_status = review["review_status"] if review else "Not reviewed"
+            follow_up_date = review["follow_up_date"] if review else ""
+            clean_follow_up = str(follow_up_date or "").strip().replace("-", "/")
+
+            is_future_follow_up = False
+            if clean_follow_up:
+                try:
+                    f_parts = clean_follow_up.split("/")
+                    if len(f_parts) >= 3 and int(f_parts[0]) > 2050:
+                        f_ad = nepali.date(int(f_parts[0]), int(f_parts[1]), int(f_parts[2])).to_datetime_date()
+                        is_future_follow_up = f_ad >= today_ad
+                    elif len(f_parts) >= 3:
+                        f_ad = date(int(f_parts[0]), int(f_parts[1]), int(f_parts[2]))
+                        is_future_follow_up = f_ad >= today_ad
+                except Exception:
+                    is_future_follow_up = clean_follow_up >= today_bs
+
+            suppressed = (
+                review_status == "Suppressed"
+                and (not clean_follow_up or is_future_follow_up)
+            )
+            if suppressed and not include_suppressed:
+                continue
+            if review_status == "Suppressed" and not suppressed:
+                review_status = "Suppression expired"
+
+            alerts.append({
+                "bill_id": int(b["id"]),
+                "bill_number": b["bill_number"],
+                "student_id": int(b["student_id"]),
+                "student_name": b["student_name"],
+                "class_name": b["class_name"] or "",
+                "contact": b["contact"] or "",
+                "parent_name": b["parent_name"] or "",
+                "course_name": b["course_name"] or "",
+                "billing_period": b["billing_period"],
+                "issue_date": b["issue_date"],
+                "due_date": b["due_date"],
+                "total_amount": float(b["total_amount"]),
+                "paid_amount": float(b["paid_amount"]),
+                "balance": float(b["balance"]),
+                "days_overdue": days_overdue,
+                "review_status": review_status,
+                "review_note": review["note"] if review else "",
+                "follow_up_date": follow_up_date or "",
+                "reviewer": review["reviewer"] if review else "",
+                "reviewed_at": review["created_at"] if review else None,
+                "suppressed": suppressed,
+            })
+
+        return sorted(alerts, key=lambda x: (-x["days_overdue"], -x["balance"], x["student_name"].casefold()))
+
+    def record_payment_alert_review(self, bill_id: int, status: str, note: str, follow_up_date: str, user_id: int | None) -> None:
+        allowed = {
+            "Contacted", "Promise to Pay", "Payment Plan", "Dispute / Under Review",
+            "No Action Needed", "Suppressed", "Monitoring",
+        }
+        if status not in allowed:
+            raise ValueError("Select a valid review status.")
+        bill_row = self.repository.db.query_one(
+            "SELECT e.student_id FROM due_bills b JOIN enrollments e ON e.id=b.enrollment_id WHERE b.id=?",
+            (int(bill_id),)
+        )
+        if not bill_row:
+            raise ValueError("Bill was not found.")
+        student_id = int(bill_row["student_id"])
+        self.repository.db.execute(
+            "INSERT INTO payment_alert_reviews (bill_id, student_id, review_status, note, follow_up_date, reviewed_by_user_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (int(bill_id), student_id, status, note.strip(), follow_up_date.strip() or None, user_id),
+        )

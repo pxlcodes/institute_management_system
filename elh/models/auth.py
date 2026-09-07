@@ -9,6 +9,9 @@ class UserSession:
     display_name: str = ""
     permissions: frozenset[str] = field(default_factory=frozenset)
     must_change_password: bool = False
+    phone: str = ""
+    student_id: int | None = None
+    teacher_id: int | None = None
 
     def can(self, permission_key: str) -> bool:
         return permission_key in self.permissions

@@ -19,6 +19,8 @@ class Receipt:
     lines: list[ReceiptLine] = field(default_factory=list)
     footer: str = "Thank you"
     show_amounts: bool = True
+    qr_payload: str = ""
+    qr_caption: str = ""
 
     @property
     def total(self) -> Decimal:

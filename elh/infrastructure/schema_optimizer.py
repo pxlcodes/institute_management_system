@@ -44,11 +44,15 @@ ACADEMIC_CALENDAR_VERSION = 15
 ACADEMIC_CALENDAR_NAME = "add academic calendar closures and working-day events"
 ACADEMIC_CALENDAR_COURSE_VERSION = 16
 ACADEMIC_CALENDAR_COURSE_NAME = "allow calendar events to apply to a specific course"
-LATEST_SCHEMA_VERSION = ACADEMIC_CALENDAR_COURSE_VERSION
+PAYMENT_ALERT_REVIEW_VERSION = 17
+PAYMENT_ALERT_REVIEW_NAME = "add payment alert review history"
+LATEST_SCHEMA_VERSION = PAYMENT_ALERT_REVIEW_VERSION
 
 
 INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("app_users", "idx_app_users_role_status", ("role", "status")),
+    ("app_users", "idx_app_users_student_id", ("student_id",)),
+    ("app_users", "idx_app_users_teacher_id", ("teacher_id",)),
     ("auth_audit_log", "idx_auth_audit_occurred", ("occurred_at",)),
     ("students", "idx_students_school", ("school_id",)),
     ("students", "idx_students_status_name", ("status", "student_name")),
@@ -74,6 +78,8 @@ INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("todo_items", "idx_todo_status_due", ("status", "due_date")),
     ("bug_reports", "idx_bug_status_created", ("status", "created_at")),
     ("attendance_alert_reviews", "idx_attendance_alert_review_student", ("student_id", "id")),
+    ("payment_alert_reviews", "idx_payment_alert_review_bill", ("bill_id", "id")),
+    ("payment_alert_reviews", "idx_payment_alert_review_student", ("student_id", "id")),
     ("staff_payment_accounts", "idx_staff_payment_account_teacher", ("teacher_id",)),
     ("staff_payment_transactions", "idx_staff_payment_transaction_account_date", ("staff_account_id", "transaction_date")),
     ("account_transfers", "idx_transfers_date", ("transfer_date",)),
@@ -204,6 +210,7 @@ def normalize_mysql_schema(db) -> None:
         ensure_mysql_counterparty_payable_migration(db)
         ensure_mysql_work_items_migration(db)
         ensure_mysql_attendance_alert_review_migration(db)
+        ensure_mysql_payment_alert_review_migration(db)
         ensure_mysql_staff_account_migration(db)
         ensure_mysql_routine_migration(db)
         ensure_mysql_class_level_migration(db)
@@ -256,6 +263,7 @@ def normalize_mysql_schema(db) -> None:
     ensure_mysql_counterparty_payable_migration(db)
     ensure_mysql_work_items_migration(db)
     ensure_mysql_attendance_alert_review_migration(db)
+    ensure_mysql_payment_alert_review_migration(db)
     ensure_mysql_staff_account_migration(db)
     ensure_mysql_routine_migration(db)
     ensure_mysql_class_level_migration(db)
@@ -439,6 +447,21 @@ def ensure_mysql_attendance_alert_review_migration(db) -> None:
     applied = db.query_one("SELECT version FROM schema_migrations WHERE version=?", (ATTENDANCE_ALERT_REVIEW_VERSION,))
     if not applied:
         db.execute("INSERT INTO schema_migrations (version,migration_name) VALUES (?,?)", (ATTENDANCE_ALERT_REVIEW_VERSION, ATTENDANCE_ALERT_REVIEW_NAME))
+
+
+def ensure_mysql_payment_alert_review_migration(db) -> None:
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS payment_alert_reviews ("
+        "id INTEGER AUTO_INCREMENT PRIMARY KEY,bill_id INTEGER NOT NULL,student_id INTEGER NOT NULL,"
+        "review_status VARCHAR(50) NOT NULL,note TEXT,follow_up_date VARCHAR(30),"
+        "reviewed_by_user_id INTEGER NULL,created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "FOREIGN KEY(bill_id) REFERENCES due_bills(id) ON DELETE CASCADE,"
+        "FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE,"
+        "FOREIGN KEY(reviewed_by_user_id) REFERENCES app_users(id) ON DELETE SET NULL) ENGINE=InnoDB"
+    )
+    applied = db.query_one("SELECT version FROM schema_migrations WHERE version=?", (PAYMENT_ALERT_REVIEW_VERSION,))
+    if not applied:
+        db.execute("INSERT INTO schema_migrations (version,migration_name) VALUES (?,?)", (PAYMENT_ALERT_REVIEW_VERSION, PAYMENT_ALERT_REVIEW_NAME))
 
 
 def ensure_mysql_staff_account_migration(db) -> None:
@@ -804,6 +827,49 @@ def normalize_sqlite_schema(path) -> None:
               id INTEGER PRIMARY KEY AUTOINCREMENT,event_name TEXT NOT NULL,event_type TEXT NOT NULL,
               course_id INTEGER,start_date TEXT NOT NULL,end_date TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'Active',
               remarks TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS payment_alert_reviews (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, bill_id INTEGER NOT NULL,
+              student_id INTEGER NOT NULL, review_status TEXT NOT NULL,
+              note TEXT, follow_up_date TEXT,
+              reviewed_by_user_id INTEGER NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              FOREIGN KEY(bill_id) REFERENCES due_bills(id) ON DELETE CASCADE,
+              FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE,
+              FOREIGN KEY(reviewed_by_user_id) REFERENCES app_users(id) ON DELETE SET NULL
+            );
+            CREATE TABLE IF NOT EXISTS proxy_class_requests (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              routine_id INTEGER NOT NULL,
+              class_date TEXT NOT NULL,
+              original_teacher_id INTEGER,
+              requested_by_teacher_id INTEGER,
+              requested_by_user_id INTEGER,
+              reason TEXT,
+              leave_type TEXT NOT NULL DEFAULT 'Absent',
+              status TEXT NOT NULL DEFAULT 'Pending',
+              proxy_teacher_id INTEGER,
+              proxy_status TEXT NOT NULL DEFAULT 'Pending',
+              proxy_declined_reason TEXT,
+              proxy_accepted_at TEXT,
+              admin_note TEXT,
+              approved_by_user_id INTEGER,
+              approved_at TEXT,
+              sms_sent INTEGER NOT NULL DEFAULT 0,
+              sms_sent_at TEXT,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at TEXT,
+              FOREIGN KEY(routine_id) REFERENCES class_routines(id) ON DELETE CASCADE,
+              FOREIGN KEY(original_teacher_id) REFERENCES teachers(id) ON DELETE SET NULL,
+              FOREIGN KEY(proxy_teacher_id) REFERENCES teachers(id) ON DELETE SET NULL
+            );
+            CREATE TABLE IF NOT EXISTS proxy_student_notifications (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              proxy_request_id INTEGER NOT NULL,
+              student_id INTEGER NOT NULL,
+              read_at TEXT,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              FOREIGN KEY(proxy_request_id) REFERENCES proxy_class_requests(id) ON DELETE CASCADE,
+              FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE
             );
             """
         )

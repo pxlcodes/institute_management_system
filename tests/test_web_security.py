@@ -31,15 +31,16 @@ async def _run_asgi_request(
     if body is not None and not any(k.lower() == "content-type" for k, _ in (headers or {}).items()):
         req_headers.append((b"content-type", b"application/json"))
 
+    path_only, _, query = path.partition("?")
     scope = {
         "type": "http",
         "asgi": {"version": "3.0"},
         "http_version": "1.1",
         "method": method.upper(),
         "scheme": "http",
-        "path": path,
-        "raw_path": path.encode("ascii"),
-        "query_string": b"",
+        "path": path_only,
+        "raw_path": path_only.encode("ascii"),
+        "query_string": query.encode("ascii"),
         "headers": req_headers,
         "client": client,
         "server": ("testserver", 80),

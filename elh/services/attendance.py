@@ -231,13 +231,16 @@ class AttendanceService:
         for offset in range((end_date - start_date).days + 1):
             current_date = start_date + timedelta(days=offset)
             business_date = self._business_date_from_ad(current_date)
-            scheduled_rows = [row for row in routine_rows if (
-                row["day_of_week"] == self._day_name(current_date)
-                and row["effective_from"] <= business_date
-                and (not row["effective_to"] or row["effective_to"] > business_date)
-            )]
-            if not scheduled_rows:
-                continue
+            if routine_rows:
+                scheduled_rows = [row for row in routine_rows if (
+                    row["day_of_week"] == self._day_name(current_date)
+                    and row["effective_from"] <= business_date
+                    and (not row["effective_to"] or row["effective_to"] > business_date)
+                )]
+                if not scheduled_rows:
+                    continue
+            else:
+                scheduled_rows = []
             global_closure = any(
                 event["event_type"] in {"Holiday", "Closure"}
                 and event["course_id"] is None
@@ -252,7 +255,7 @@ class AttendanceService:
                 and event["course_id"] is not None
                 and event["start_date"] <= business_date <= event["end_date"]
             }
-            if course_ids is None or any(
+            if not routine_rows or course_ids is None or any(
                 row["course_id"] is None or int(row["course_id"]) not in closed_courses
                 for row in scheduled_rows
             ):

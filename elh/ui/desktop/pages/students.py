@@ -16,6 +16,7 @@ from elh.ui.desktop.pages.attendance_selection import (
     selected_attendance_device,
 )
 from elh.ui.desktop.pages.import_templates import ImportTemplateMixin
+from elh.ui.desktop.pages.student_profile import StudentProfileDialog
 
 
 class StudentsPage(CrudPage, ImportTemplateMixin):
@@ -103,19 +104,33 @@ class StudentsPage(CrudPage, ImportTemplateMixin):
         )
         self.tree.configure(selectmode="extended")
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
-        self.tree.bind("<Double-1>", self.open_editor)
+        self.tree.bind("<Double-1>", self.open_profile_dialog)
+        ttk.Button(
+            self.page_toolbar,
+            text="👤 View Profile...",
+            style="Accent.TButton",
+            command=self.open_profile_dialog,
+        ).pack(side="left", padx=4)
         ttk.Button(
             self.page_toolbar,
             text="Send SMS...",
             command=self.open_sms_dialog,
         ).pack(side="left", padx=4)
+        if getattr(self.app.services, "settings", None) and self.app.services.settings.get_bool("whatsapp_enabled", False):
+            ttk.Button(
+                self.page_toolbar,
+                text="💬 WhatsApp...",
+                command=self.open_whatsapp_dialog,
+            ).pack(side="left", padx=4)
         ttk.Button(
             self.page_toolbar,
             text="Assign Enrollment...",
-            style="Accent.TButton",
             command=self.assign_selected_enrollment,
         ).pack(side="left", padx=4)
         self.add_toolbar_menu("More actions", [
+            ("View student profile…", self.open_profile_dialog),
+            ("Edit student details…", self.open_editor),
+            ("", None),
             ("Import CSV…", self.import_csv),
             ("Download import template…", lambda: self.download_csv_template(
                 "students_import_template.csv", self.IMPORT_HEADERS,
@@ -558,6 +573,37 @@ class StudentsPage(CrudPage, ImportTemplateMixin):
         dialog.geometry(f"{width}x{height}+{x}+{y}")
         dialog.grab_set()
         notebook.select(0)
+        return dialog
+
+    def open_profile_dialog(self, _event=None) -> None:
+        if not self.selected_id:
+            messagebox.showwarning("Select Student", "Select a student first.", parent=self)
+            return
+        StudentProfileDialog(
+            self,
+            self.app,
+            self.selected_id,
+            on_edit_requested=self._open_editor_for_id,
+            on_sms_requested=self._open_sms_for_id,
+            on_enroll_requested=self._open_enroll_for_id,
+        )
+
+    def _open_editor_for_id(self, student_id: int) -> tk.Toplevel | None:
+        self.selected_id = student_id
+        return self.open_editor()
+
+    def _open_sms_for_id(self, student_id: int) -> None:
+        self.selected_id = student_id
+        self.open_sms_dialog()
+
+    def _open_enroll_for_id(self, student_id: int) -> None:
+        self.selected_id = student_id
+        for item in self.tree.get_children():
+            vals = self.tree.item(item, "values")
+            if vals and int(vals[0]) == student_id:
+                self.tree.selection_set(item)
+                break
+        self.assign_selected_enrollment()
 
     def open_sms_dialog(self) -> None:
         if not self.selected_id:
@@ -688,6 +734,159 @@ class StudentsPage(CrudPage, ImportTemplateMixin):
         y = max(0, (dialog.winfo_screenheight() - height) // 2)
         dialog.geometry(f"{width}x{height}+{x}+{y}")
         dialog.grab_set()
+
+    def open_whatsapp_dialog(self) -> None:
+        if not self.selected_id:
+            messagebox.showwarning("WhatsApp", "Select a student from the list first.", parent=self)
+            return
+
+        student = self.db.query_one(
+            "SELECT s.id, s.student_name, s.contact, s.parent_name, s.class_name "
+            "FROM students s WHERE s.id = ?",
+            (self.selected_id,),
+        )
+        if not student:
+            messagebox.showerror("Error", "Student record was not found.", parent=self)
+            return
+
+        notif_svc = getattr(self.app.services, "notifications", None)
+        if not notif_svc:
+            self.show_error(ValueError("Notification service is unavailable."))
+            return
+
+        import webbrowser
+        from tkinter import scrolledtext
+
+        comp = notif_svc.company_context()
+        comp_name = comp.get("company_name") or "EXPERT LEARNING HUB"
+        s_name = student["student_name"] or "Student"
+        phone = (student["contact"] or "").strip()
+
+        balance_row = self.db.query_one(
+            "SELECT COALESCE(SUM(b.total_amount - b.paid_amount), 0) as balance "
+            "FROM due_bills b "
+            "JOIN enrollments e ON e.id = b.enrollment_id "
+            "WHERE e.student_id = ? AND b.status != 'Paid'",
+            (self.selected_id,),
+        )
+        due_bal = float(balance_row["balance"]) if balance_row else 0.0
+
+        dialog = tk.Toplevel(self)
+        dialog.title(f"WhatsApp - {s_name}")
+        dialog.geometry("620x540")
+        dialog.minsize(540, 460)
+        dialog.transient(self.winfo_toplevel())
+        dialog.grab_set()
+
+        top = ttk.LabelFrame(dialog, text=f"WhatsApp Chat with {s_name}", padding=12)
+        top.pack(fill="both", expand=True, padx=12, pady=(12, 6))
+
+        rec_frame = ttk.Frame(top)
+        rec_frame.pack(fill="x", pady=(0, 8))
+        ttk.Label(rec_frame, text="Mobile Number: *", font=("Segoe UI", 9, "bold")).pack(side="left")
+        phone_var = tk.StringVar(value=phone)
+        ttk.Entry(rec_frame, textvariable=phone_var, width=22, font=("Segoe UI", 10)).pack(side="left", padx=8)
+
+        if due_bal > 0:
+            ttk.Label(rec_frame, text=f"Due: Rs. {due_bal:,.2f}", font=("Segoe UI", 9, "bold"), foreground="#DC2626").pack(side="right")
+
+        tmpl_bar = ttk.Frame(top)
+        tmpl_bar.pack(fill="x", pady=(0, 6))
+        ttk.Label(tmpl_bar, text="Templates:", font=("Segoe UI", 8, "bold")).pack(side="left", padx=(0, 4))
+
+        def load_greeting():
+            msg_text.delete("1.0", "end")
+            msg_text.insert(
+                "1.0",
+                f"*{comp_name}*\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"Dear *{s_name}*,\n\n"
+                f"Greetings from {comp_name}! We are reaching out regarding your classes.\n\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"Please let us know if you have any questions. Thank you!",
+            )
+
+        def load_due_notice():
+            msg_text.delete("1.0", "end")
+            msg_text.insert(
+                "1.0",
+                f"*{comp_name}*\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"📌 *FEE REMINDER*\n\n"
+                f"Dear *{s_name}*,\n"
+                f"This is a gentle reminder regarding your pending fee balance of *Rs. {due_bal:,.2f}*.\n\n"
+                f"Kindly settle the due amount at your earliest convenience. Thank you!\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"Kamana Sewa Bikas Bank: 08000300919240000001\n"
+                f"Fonepay / eSewa: 9860962645",
+            )
+
+        def load_attendance():
+            msg_text.delete("1.0", "end")
+            msg_text.insert(
+                "1.0",
+                f"*{comp_name}*\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"📅 *ATTENDANCE / CLASS UPDATE*\n\n"
+                f"Dear *{s_name}* (Parent/Guardian),\n\n"
+                f"Please be informed regarding regular class attendance at {comp_name}.\n\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"For any leave or queries, please contact the front desk.",
+            )
+
+        ttk.Button(tmpl_bar, text="👋 Greeting", command=load_greeting).pack(side="left", padx=2)
+        ttk.Button(tmpl_bar, text="📌 Fee Reminder", command=load_due_notice).pack(side="left", padx=2)
+        ttk.Button(tmpl_bar, text="📅 Attendance Notice", command=load_attendance).pack(side="left", padx=2)
+
+        ttk.Label(top, text="Message Body (Editable):").pack(anchor="w", pady=(4, 2))
+        msg_text = scrolledtext.ScrolledText(top, wrap="word", height=11, font=("Segoe UI", 9))
+        msg_text.pack(fill="both", expand=True, pady=(0, 6))
+        load_greeting()
+
+        status_lbl = ttk.Label(top, text="", foreground="#15803D", font=("Segoe UI", 9, "bold"))
+        status_lbl.pack(anchor="w")
+
+        btn_bar = ttk.Frame(dialog, padding=(12, 8))
+        btn_bar.pack(fill="x", side="bottom")
+
+        def open_wa():
+            p = phone_var.get().strip()
+            body = msg_text.get("1.0", "end-1c").strip()
+            if not p:
+                messagebox.showerror("Error", "Please enter a valid mobile number.", parent=dialog)
+                return
+            try:
+                wa_url = notif_svc.build_whatsapp_link(p, body)
+                webbrowser.open(wa_url)
+                status_lbl.config(text="✓ Opened in WhatsApp! You can send the message now.")
+            except Exception as e:
+                messagebox.showerror("Error", str(e), parent=dialog)
+
+        def send_api():
+            p = phone_var.get().strip()
+            body = msg_text.get("1.0", "end-1c").strip()
+            if not p:
+                messagebox.showerror("Error", "Please enter a valid mobile number.", parent=dialog)
+                return
+            try:
+                resp = notif_svc.send_whatsapp(p, body)
+                if resp.success:
+                    status_lbl.config(text=f"✓ Sent via automated API! (ID: {resp.message_id or 'OK'})")
+                    messagebox.showinfo("Success", f"WhatsApp message sent!\n\nMessage ID: {resp.message_id}", parent=dialog)
+                else:
+                    messagebox.showerror("Gateway Error", f"{resp.message}\n\nTip: You can use 'Open in WhatsApp' instead.", parent=dialog)
+            except Exception as e:
+                messagebox.showerror("Error", str(e), parent=dialog)
+
+        def copy_msg():
+            dialog.clipboard_clear()
+            dialog.clipboard_append(msg_text.get("1.0", "end-1c").strip())
+            status_lbl.config(text="✓ Copied to clipboard!")
+
+        ttk.Button(btn_bar, text="🚀 Open in WhatsApp (Web / App)", style="Accent.TButton", command=open_wa).pack(side="left", padx=3)
+        ttk.Button(btn_bar, text="⚡ Send via API", command=send_api).pack(side="left", padx=3)
+        ttk.Button(btn_bar, text="📋 Copy Text", command=copy_msg).pack(side="left", padx=3)
+        ttk.Button(btn_bar, text="Close", command=dialog.destroy).pack(side="right", padx=3)
 
     def refresh(self) -> None:
         classes = self.app.lookup_cache.get(

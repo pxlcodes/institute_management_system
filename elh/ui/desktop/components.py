@@ -277,11 +277,13 @@ class CrudPage(BasePage):
         ttk.Button(search_row, text="Clear", command=clear_filters).pack(side="left", padx=2)
         tree.search_var = search_var
         tree._all_items = all_items
-        tree.filter_var = filter_value_var
-        tree.filter_column_var = filter_column_var
-        tree.visible_column_vars = visible_columns
-        tree.bind("<Return>", lambda _event: tree.event_generate("<Double-1>"), add="+")
-        tree.bind("<space>", lambda _event: tree.event_generate("<Double-1>"), add="+")
+        def _on_key_activate(_event):
+            try:
+                tree.event_generate("<<TreeviewSelect>>")
+            except Exception:
+                pass
+        tree.bind("<Return>", _on_key_activate, add="+")
+        tree.bind("<space>", _on_key_activate, add="+")
         return tree
 
     @staticmethod
@@ -393,6 +395,22 @@ class FormBuilder:
                 width=width, state=state,
             )
         widget.grid(row=self.row, column=1, padx=5, pady=4, sticky="ew")
+        self.row += 1
+        return widget
+
+    def check(
+        self,
+        label: str,
+        variable: tk.BooleanVar | tk.Variable,
+        text: str = "",
+    ) -> ttk.Checkbutton:
+        ttk.Label(self.parent, text=label, style="Form.TLabel").grid(
+            row=self.row, column=0, padx=5, pady=4, sticky="w"
+        )
+        widget = ttk.Checkbutton(
+            self.parent, text=text or label, variable=variable, style="Form.TCheckbutton"
+        )
+        widget.grid(row=self.row, column=1, padx=5, pady=4, sticky="w")
         self.row += 1
         return widget
 

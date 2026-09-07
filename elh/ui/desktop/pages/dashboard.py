@@ -22,7 +22,9 @@ class DashboardPage(BasePage):
         self.cards = {}
         self.attendance_alerts_by_student = {}
         self.absent_students_by_student = {}
+        self.payment_alerts_by_bill = {}
         self.show_suppressed_alerts = False
+        self.show_suppressed_payment_alerts = False
         self._attendance_cache = None
         self._attendance_after_id = None
         self._attendance_generation = 0
@@ -54,11 +56,13 @@ class DashboardPage(BasePage):
         dashboard_tabs = ttk.Notebook(self)
         dashboard_tabs.pack(fill="both", expand=True, pady=(12, 0))
         attendance_tab = ttk.Frame(dashboard_tabs, padding=4)
+        payment_tab = ttk.Frame(dashboard_tabs, padding=4)
         present_tab = ttk.Frame(dashboard_tabs, padding=4)
         absent_tab = ttk.Frame(dashboard_tabs, padding=4)
         not_enrolled_tab = ttk.Frame(dashboard_tabs, padding=4)
         accounts_tab = ttk.Frame(dashboard_tabs, padding=4)
         dashboard_tabs.add(attendance_tab, text="Attendance & Follow-up")
+        dashboard_tabs.add(payment_tab, text="Payment Alerts & Follow-up")
         dashboard_tabs.add(present_tab, text="Students Present Today")
         dashboard_tabs.add(absent_tab, text="Students Absent Today")
         dashboard_tabs.add(not_enrolled_tab, text="Punched, Not Enrolled")
@@ -79,6 +83,24 @@ class DashboardPage(BasePage):
         self.suppressed_toggle = ttk.Button(alert_actions, text="Show Suppressed", command=self.toggle_suppressed_alerts)
         self.suppressed_toggle.pack(side="left", padx=(6, 0))
         ttk.Label(alert_actions, text="Suppress keeps an audit record; a resume date brings it back automatically.", style="Hint.TLabel").pack(side="left", padx=10)
+
+        ttk.Label(payment_tab, text="Overdue Payment Alerts & Follow-up", style="SubTitle.TLabel").pack(anchor="w", pady=(8, 7), padx=4)
+        payment_area = ttk.Frame(payment_tab); payment_area.pack(fill="both", expand=True)
+        self.payment_tree = CrudPage.make_tree(self, payment_area, [
+            ("student", "Student", 200), ("class", "Class", 80), ("bill", "Bill #", 130),
+            ("course", "Course", 150), ("due", "Due Date", 95), ("overdue", "Overdue", 80),
+            ("balance", "Balance Due", 100), ("review", "Follow-up Status", 130),
+            ("follow_up", "Follow-up Date", 105), ("note", "Notes", 220),
+        ])
+        self.payment_tree.print_title = "OVERDUE PAYMENT ALERTS"
+        self.payment_tree.configure(height=8)
+        self.payment_tree.bind("<Double-1>", self.review_selected_payment_alert)
+        payment_actions = ttk.Frame(payment_tab, style="Toolbar.TFrame", padding=(8, 4)); payment_actions.pack(fill="x")
+        ttk.Button(payment_actions, text="Review / Follow-up Selected...", style="Accent.TButton", command=self.review_selected_payment_alert).pack(side="left")
+        ttk.Button(payment_actions, text="Suppress Follow-up...", command=self.suppress_selected_payment_alert).pack(side="left", padx=(6, 0))
+        self.suppressed_payment_toggle = ttk.Button(payment_actions, text="Show Suppressed", command=self.toggle_suppressed_payment_alerts)
+        self.suppressed_payment_toggle.pack(side="left", padx=(6, 0))
+        ttk.Label(payment_actions, text="Suppress hides the alert until the resume follow-up date.", style="Hint.TLabel").pack(side="left", padx=10)
 
         ttk.Label(present_tab, text="Students Present Today", style="SubTitle.TLabel").pack(
             anchor="w", pady=(8, 7), padx=4
@@ -237,16 +259,40 @@ class DashboardPage(BasePage):
             attendance_alerts = self.app.services.attendance.student_attendance_alerts(
                 include_suppressed=self.show_suppressed_alerts,
             )
+            payment_alerts = self.app.services.billing.payment_alerts(
+                include_suppressed=self.show_suppressed_payment_alerts,
+            )
             if generation != self._attendance_generation:
                 return
-            self._attendance_cache = (time.monotonic(), present_students, absent_students, punched_not_enrolled, attendance_alerts)
-            self._render_attendance(present_students, absent_students, punched_not_enrolled, attendance_alerts)
+            self._attendance_cache = (time.monotonic(), present_students, absent_students, punched_not_enrolled, attendance_alerts, payment_alerts)
+            self._render_attendance(present_students, absent_students, punched_not_enrolled, attendance_alerts, payment_alerts)
         except Exception:
             logging.getLogger(__name__).exception("Dashboard attendance refresh failed")
 
-    def _render_attendance(self, present_students, absent_students, punched_not_enrolled, attendance_alerts) -> None:
+    def _render_attendance(self, present_students, absent_students, punched_not_enrolled, attendance_alerts, payment_alerts=None) -> None:
         self.attendance_alerts_by_student = {int(row["student_id"]): row for row in attendance_alerts}
         self.absent_students_by_student = {int(row["id"]): row for row in absent_students}
+        if payment_alerts is not None:
+            self.payment_alerts_by_bill = {int(row["bill_id"]): row for row in payment_alerts}
+            CrudPage.clear_tree(self.payment_tree)
+            for row in payment_alerts:
+                self.payment_tree.insert(
+                    "",
+                    "end",
+                    iid=f"payment-{row['bill_id']}",
+                    values=(
+                        row["student_name"],
+                        row["class_name"] or "",
+                        row["bill_number"],
+                        row["course_name"],
+                        row["due_date"],
+                        f"{row['days_overdue']} d",
+                        money(row["balance"]),
+                        row["review_status"],
+                        row["follow_up_date"] or "-",
+                        row["review_note"] or "",
+                    ),
+                )
         self.cards["student_present"].config(text=str(len(present_students)))
         self.cards["attendance_alerts"].config(text=str(len(attendance_alerts)))
 
@@ -407,6 +453,129 @@ class DashboardPage(BasePage):
                 self.refresh()
             except Exception as exc:
                 messagebox.showerror("Suppress Follow-up", str(exc), parent=dialog)
+
+        ttk.Button(actions, text="Suppress", style="Accent.TButton", command=save_suppression).pack(side="right", padx=(0, 6))
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.grab_set()
+
+    def _selected_payment_alert(self):
+        selected = self.payment_tree.selection()
+        if not selected:
+            messagebox.showinfo("Payment Alert", "Select a payment alert first.", parent=self)
+            return None
+        try:
+            return self.payment_alerts_by_bill.get(
+                int(str(selected[0]).removeprefix("payment-"))
+            )
+        except ValueError:
+            return None
+
+    def toggle_suppressed_payment_alerts(self) -> None:
+        self.show_suppressed_payment_alerts = not self.show_suppressed_payment_alerts
+        self.suppressed_payment_toggle.configure(
+            text="Hide Suppressed" if self.show_suppressed_payment_alerts else "Show Suppressed"
+        )
+        self.invalidate_cache()
+        self.refresh()
+
+    def review_selected_payment_alert(self, _event=None):
+        alert = self._selected_payment_alert()
+        if not alert:
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("Review Payment Alert / Follow-up")
+        dialog.transient(self.winfo_toplevel())
+        dialog.grab_set()
+        shell = ttk.Frame(dialog, padding=14, style="Form.TFrame")
+        shell.pack(fill="both", expand=True)
+        details = (
+            f"Student: {alert['student_name']}   |   Class: {alert['class_name'] or '-'}\n"
+            f"Bill #: {alert['bill_number']}   |   Course: {alert['course_name']}\n"
+            f"Due date: {alert['due_date']} ({alert['days_overdue']} days overdue)\n"
+            f"Balance due: Rs. {money(alert['balance'])}"
+        )
+        ttk.Label(shell, text=details, style="Form.TLabel", justify="left").pack(anchor="w", pady=(0, 10))
+        if alert["review_status"] != "Not reviewed":
+            ttk.Label(
+                shell,
+                text=f"Previous review: {alert['review_status']} by {alert['reviewer'] or 'Unknown'}; follow-up {alert['follow_up_date'] or '-'}\n{alert['review_note'] or ''}",
+                style="Hint.TLabel", justify="left", wraplength=580,
+            ).pack(anchor="w", pady=(0, 10))
+        initial_status = alert["review_status"]
+        if initial_status in {"Not reviewed", "Suppression expired"}:
+            initial_status = "Promise to Pay"
+        values = {
+            "status": tk.StringVar(value=initial_status),
+            "follow_up": tk.StringVar(value=alert["follow_up_date"] or ""),
+            "note": tk.StringVar(value=alert["review_note"] or ""),
+        }
+        form = ttk.Frame(shell, style="Form.TFrame")
+        form.pack(fill="x")
+        fb = FormBuilder(form)
+        fb.combo(
+            "Review Status *", values["status"],
+            ["Suppressed", "Promise to Pay", "Parent Contacted", "Payment Plan", "Dispute / Under Review", "Monitoring", "No Action Needed"],
+        )
+        fb.entry("Follow-up Date (BS)", values["follow_up"], width=42)
+        fb.entry("Notes", values["note"], width=42)
+
+        def save_review():
+            try:
+                follow_up = validate_date(values["follow_up"].get(), "Follow-up date", True)
+                self.app.services.billing.record_payment_alert_review(
+                    alert["bill_id"], values["status"].get(), values["note"].get(), follow_up, self.app.session.user_id,
+                )
+                dialog.destroy()
+                self.invalidate_cache()
+                self.refresh()
+            except Exception as exc:
+                messagebox.showerror("Payment Review", str(exc), parent=dialog)
+
+        ttk.Button(shell, text="Save Follow-up", style="Accent.TButton", command=save_review).pack(anchor="e", pady=(12, 0))
+
+    def suppress_selected_payment_alert(self) -> None:
+        alert = self._selected_payment_alert()
+        if not alert:
+            return
+        if alert.get("suppressed"):
+            messagebox.showinfo("Payment Follow-up", "This alert is already suppressed.", parent=self)
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("Suppress Payment Alert")
+        dialog.transient(self.winfo_toplevel())
+        dialog.resizable(False, False)
+        shell = ttk.Frame(dialog, padding=14, style="Form.TFrame")
+        shell.pack(fill="both", expand=True)
+        ttk.Label(shell, text=f"Suppress payment follow-up — {alert['student_name']} ({alert['bill_number']})", style="SubTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            shell,
+            text="The alert will be hidden from the active dashboard. Add a resume follow-up date to restore it automatically when due.",
+            style="Hint.TLabel", wraplength=560, justify="left",
+        ).pack(anchor="w", pady=(3, 12))
+        values = {"reason": tk.StringVar(), "resume": tk.StringVar()}
+        form = ttk.Frame(shell, style="Form.TFrame")
+        form.pack(fill="x")
+        builder = FormBuilder(form)
+        builder.entry("Suppression Reason / Notes *", values["reason"], width=46)
+        builder.entry("Resume Follow-up Date (BS)", values["resume"], width=46)
+        actions = ttk.Frame(shell, style="Form.TFrame")
+        actions.pack(fill="x", pady=(14, 0))
+        ttk.Button(actions, text="Cancel", command=dialog.destroy).pack(side="right")
+
+        def save_suppression():
+            try:
+                reason = values["reason"].get().strip()
+                if not reason:
+                    raise ValueError("Enter a reason for suppressing this follow-up.")
+                resume = validate_date(values["resume"].get(), "Resume follow-up date", True)
+                self.app.services.billing.record_payment_alert_review(
+                    alert["bill_id"], "Suppressed", reason, resume, self.app.session.user_id,
+                )
+                dialog.destroy()
+                self.invalidate_cache()
+                self.refresh()
+            except Exception as exc:
+                messagebox.showerror("Suppress Payment Follow-up", str(exc), parent=dialog)
 
         ttk.Button(actions, text="Suppress", style="Accent.TButton", command=save_suppression).pack(side="right", padx=(0, 6))
         dialog.bind("<Escape>", lambda _event: dialog.destroy())

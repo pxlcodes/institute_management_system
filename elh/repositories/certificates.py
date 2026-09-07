@@ -150,8 +150,8 @@ class CertificateRepository:
 
     def list(self):
         return self.db.query(
-            "SELECT id,certificate_number,student_name_snapshot,course_name_snapshot," 
-            "course_start_date,course_end_date,duration_days,certify_date," 
-            "instructor_name,document_path,pdf_path,pdf_sha256,created_at "
-            "FROM course_certificates ORDER BY certify_date DESC,id DESC"
+            "SELECT cc.id,cc.certificate_number,cc.enrollment_id,e.student_id,cc.student_name_snapshot,cc.course_name_snapshot," 
+            "cc.course_start_date,cc.course_end_date,cc.duration_days,cc.certify_date," 
+            "cc.instructor_name,cc.document_path,cc.pdf_path,cc.pdf_sha256,cc.created_at "
+            "FROM course_certificates cc LEFT JOIN enrollments e ON e.id=cc.enrollment_id ORDER BY cc.certify_date DESC,cc.id DESC"
         )

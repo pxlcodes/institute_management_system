@@ -14,6 +14,7 @@ from .schools import SchoolsPage
 from .bills import DueBillsPage
 from .reports import ReportsPage
 from .attendance import AttendancePage
+from .assistant import AssistantPage
 from .devices import DeviceHealthPage, PosPrinterPage
 from .certificates import CertificatesPage
 from .work_items import WorkItemsPage
@@ -24,5 +25,5 @@ from .academic_calendar import AcademicCalendarPage
 __all__ = [
     "AccountsPage", "AdvancesPage", "DashboardPage", "EnrollmentsPage",
     "ExpensePage", "IncomePage", "LedgerPage", "SalaryPage",
-    "StudentTransactionsPage", "StudentsPage", "TeachersPage", "TransfersPage", "CoursesPage", "SchoolsPage", "DueBillsPage", "ReportsPage", "AttendancePage", "DeviceHealthPage", "PosPrinterPage", "CertificatesPage", "WorkItemsPage", "RoutinesPage", "GradesPage", "AcademicCalendarPage",
+    "StudentTransactionsPage", "StudentsPage", "TeachersPage", "TransfersPage", "CoursesPage", "SchoolsPage", "DueBillsPage", "ReportsPage", "AttendancePage", "AssistantPage", "DeviceHealthPage", "PosPrinterPage", "CertificatesPage", "WorkItemsPage", "RoutinesPage", "GradesPage", "AcademicCalendarPage",
 ]

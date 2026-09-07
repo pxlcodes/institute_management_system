@@ -179,6 +179,168 @@ class BillingRepository:
             (bill_id,),
         )
 
+    def record_multi_payment(
+        self,
+        bill_ids: list[int],
+        amount: Decimal,
+        discount: Decimal,
+        payment_date: str,
+        account_id: int | None,
+        method: str,
+        receipt_no: str,
+        remarks: str = "",
+        allow_advance: bool = True,
+    ) -> dict[str, Any]:
+        amount = Decimal(str(amount))
+        discount = Decimal(str(discount))
+        bill_ids = list(dict.fromkeys(bill_ids))
+        if not bill_ids:
+            raise ValueError("Select at least one bill.")
+        if amount < 0 or discount < 0:
+            raise ValueError("Payment and discount cannot be negative.")
+        if amount + discount <= 0:
+            raise ValueError("Enter a payment amount or discount.")
+        if amount > 0 and not account_id:
+            raise ValueError("Select a payment account.")
+
+        def callback(conn):
+            lock_clause = "" if conn.__class__.__module__.startswith("sqlite3") else " FOR UPDATE"
+            placeholders = ",".join("?" for _ in bill_ids)
+            query = (
+                f"SELECT b.*, e.student_id, s.student_name FROM due_bills b "
+                f"JOIN enrollments e ON e.id=b.enrollment_id "
+                f"JOIN students s ON s.id=e.student_id "
+                f"WHERE b.id IN ({placeholders})" + lock_clause
+            )
+            rows = conn.execute(query, tuple(bill_ids)).fetchall()
+            if not rows:
+                raise ValueError("No bills were found.")
+            if len(rows) != len(bill_ids):
+                raise ValueError("One or more selected bills were not found.")
+
+            student_ids = {int(r["student_id"]) for r in rows}
+            if len(student_ids) > 1:
+                raise ValueError("All selected bills must belong to the same student.")
+
+            # Sort chronologically by issue_date, then id
+            rows = sorted(rows, key=lambda r: (str(r["issue_date"] or ""), int(r["id"])))
+            student_id = int(rows[0]["student_id"])
+            student_name = str(rows[0]["student_name"] or "")
+            first_enrollment_id = int(rows[0]["enrollment_id"])
+
+            total_remaining = sum(
+                max(Decimal("0"), Decimal(str(r["total_amount"])) - Decimal(str(r["paid_amount"])))
+                for r in rows
+            )
+            if total_remaining <= 0 and not allow_advance:
+                raise ValueError("All selected bills are already paid.")
+            if not allow_advance and (amount + discount > total_remaining):
+                raise ValueError(
+                    f"Payment plus discount cannot exceed the total remaining balance of {total_remaining:,.2f}."
+                )
+
+            rem_discount = discount
+            rem_amount = amount
+            transaction_ids: list[int] = []
+            updated_bills: list[dict[str, Any]] = []
+
+            for row in rows:
+                b_total = Decimal(str(row["total_amount"]))
+                b_paid = Decimal(str(row["paid_amount"]))
+                b_rem = max(Decimal("0"), b_total - b_paid)
+                if b_rem <= 0:
+                    continue
+
+                disc_alloc = min(rem_discount, b_rem)
+                rem_discount -= disc_alloc
+                b_rem -= disc_alloc
+
+                pay_alloc = min(rem_amount, b_rem)
+                rem_amount -= pay_alloc
+
+                if disc_alloc > 0 or pay_alloc > 0:
+                    new_paid = b_paid + pay_alloc
+                    new_total = b_total - disc_alloc
+                    status = "Paid" if new_paid >= new_total else "Partially Paid"
+                    cursor = conn.execute(
+                        "UPDATE due_bills SET paid_amount=?,discount=discount+?,"
+                        "total_amount=?,status=? WHERE id=?",
+                        (str(new_paid), str(disc_alloc), str(new_total), status, row["id"]),
+                    )
+                    cursor.close()
+                    particular = f"Payment for bill {row['bill_number']}"
+                    cursor = conn.execute(
+                        "INSERT INTO student_transactions "
+                        "(student_id,enrollment_id,transaction_date,transaction_type,particular,"
+                        "charge_amount,payment_amount,discount_amount,account_id,payment_method,"
+                        "receipt_no,remarks) VALUES (?,?,?,'Payment Received',?,0,?,?,?,?,?,?)",
+                        (
+                            row["student_id"], row["enrollment_id"], payment_date, particular,
+                            str(pay_alloc), str(disc_alloc), account_id, method, receipt_no, remarks,
+                        ),
+                    )
+                    t_id = int(cursor.lastrowid)
+                    cursor.close()
+                    transaction_ids.append(t_id)
+                    updated_bills.append({
+                        "bill_id": int(row["id"]),
+                        "bill_number": str(row["bill_number"]),
+                        "paid": pay_alloc,
+                        "discount": disc_alloc,
+                        "status": status,
+                    })
+
+            advance_amount = rem_amount
+            if advance_amount > 0 and allow_advance:
+                adv_particular = (
+                    f"Advance fee payment (Surplus after settling {len(updated_bills)} bill(s))"
+                    if updated_bills else "Advance fee payment"
+                )
+                cursor = conn.execute(
+                    "INSERT INTO student_transactions "
+                    "(student_id,enrollment_id,transaction_date,transaction_type,particular,"
+                    "charge_amount,payment_amount,discount_amount,account_id,payment_method,"
+                    "receipt_no,remarks) VALUES (?,?,?,'Payment Received',?,0,?,0,?,?,?,?)",
+                    (
+                        student_id, first_enrollment_id, payment_date, adv_particular,
+                        str(advance_amount), account_id, method, receipt_no,
+                        remarks or "Advance payment surplus",
+                    ),
+                )
+                adv_t_id = int(cursor.lastrowid)
+                cursor.close()
+                transaction_ids.append(adv_t_id)
+
+            if amount > 0:
+                bill_refs = ", ".join(u["bill_number"] for u in updated_bills)
+                if len(updated_bills) > 1:
+                    ledger_part = f"Payment for {len(updated_bills)} bills ({bill_refs})"
+                elif len(updated_bills) == 1:
+                    ledger_part = f"Payment for bill {updated_bills[0]['bill_number']}"
+                else:
+                    ledger_part = "Advance fee payment"
+
+                if advance_amount > 0 and updated_bills:
+                    ledger_part += f" (incl. advance Rs. {advance_amount:,.2f})"
+
+                self.db.add_ledger(
+                    conn, payment_date, account_id, "IN", str(amount),
+                    "Student Transaction", transaction_ids[0] if transaction_ids else 0,
+                    ledger_part, receipt_no, remarks,
+                )
+
+            return {
+                "student_id": student_id,
+                "student_name": student_name,
+                "transaction_ids": transaction_ids,
+                "updated_bills": updated_bills,
+                "total_paid": amount,
+                "total_discount": discount,
+                "advance_amount": advance_amount,
+            }
+
+        return self.db.transaction(callback)
+
     def record_payment(
         self,
         bill_id: int,
@@ -189,67 +351,20 @@ class BillingRepository:
         method: str,
         receipt_no: str,
         remarks: str = "",
-    ):
-        amount = Decimal(str(amount))
-        discount = Decimal(str(discount))
-
-        def callback(conn):
-            lock_clause = "" if conn.__class__.__module__.startswith("sqlite3") else " FOR UPDATE"
-            row = conn.execute(
-                "SELECT b.*,e.student_id FROM due_bills b "
-                "JOIN enrollments e ON e.id=b.enrollment_id WHERE b.id=?" + lock_clause,
-                (bill_id,),
-            ).fetchone()
-            if not row:
-                raise ValueError("Bill was not found.")
-            total = Decimal(str(row["total_amount"]))
-            paid = Decimal(str(row["paid_amount"]))
-            remaining = total - paid
-            if remaining <= 0:
-                raise ValueError("This bill is already paid.")
-            if amount < 0 or discount < 0:
-                raise ValueError("Payment and discount cannot be negative.")
-            if amount + discount <= 0:
-                raise ValueError("Enter a payment amount or discount.")
-            if amount + discount > remaining:
-                raise ValueError(
-                    f"Payment plus discount cannot exceed the remaining balance of {remaining:,.2f}."
-                )
-            if amount > 0 and not account_id:
-                raise ValueError("Select a payment account.")
-
-            new_paid = paid + amount
-            new_total = total - discount
-            status = "Paid" if new_paid >= new_total else "Partially Paid"
-            cursor = conn.execute(
-                "UPDATE due_bills SET paid_amount=?,discount=discount+?,"
-                "total_amount=?,status=? WHERE id=?",
-                (str(new_paid), str(discount), str(new_total), status, bill_id),
-            )
-            cursor.close()
-            particular = f"Payment for bill {row['bill_number']}"
-            cursor = conn.execute(
-                "INSERT INTO student_transactions "
-                "(student_id,enrollment_id,transaction_date,transaction_type,particular,"
-                "charge_amount,payment_amount,discount_amount,account_id,payment_method,"
-                "receipt_no,remarks) VALUES (?,?,?,'Payment Received',?,0,?,?,?,?,?,?)",
-                (
-                    row["student_id"], row["enrollment_id"], payment_date, particular,
-                    str(amount), str(discount), account_id, method, receipt_no, remarks,
-                ),
-            )
-            transaction_id = int(cursor.lastrowid)
-            cursor.close()
-            if amount > 0:
-                self.db.add_ledger(
-                    conn, payment_date, account_id, "IN", str(amount),
-                    "Student Transaction", transaction_id, particular,
-                    receipt_no, remarks,
-                )
-
-            return transaction_id
-
-        return self.db.transaction(callback)
+        allow_advance: bool = True,
+    ) -> int:
+        result = self.record_multi_payment(
+            [bill_id],
+            amount,
+            discount,
+            payment_date,
+            account_id,
+            method,
+            receipt_no,
+            remarks,
+            allow_advance=allow_advance,
+        )
+        return result["transaction_ids"][0] if result["transaction_ids"] else 0
 
     @staticmethod
     def _enrollment_select() -> str:

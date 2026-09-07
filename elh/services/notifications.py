@@ -11,6 +11,12 @@ from string import Formatter
 from elh.config import AppConfig
 from elh.core.settings import SettingsService
 from elh.integrations.sms import create_sms_provider
+from elh.integrations.whatsapp import (
+    WhatsAppResponse,
+    build_whatsapp_click_to_chat_url,
+    create_whatsapp_provider,
+    normalize_whatsapp_recipient,
+)
 
 
 SMS_EVENT_TEMPLATES = (
@@ -43,6 +49,21 @@ SMS_EVENT_TEMPLATES = (
         "attendance_absence",
         "Student Absence Alert",
         "Dear Parent/Guardian, {student_name} has not recorded attendance on {attendance_date}. Please contact {company_name} if this is due to leave or an attendance issue.",
+    ),
+    (
+        "due_bill_reminder",
+        "Due Bill Reminder",
+        "Dear {student_name}, reminder that bill {bill_number} for {currency_symbol} {amount} is due by {due_date}. {company_name}",
+    ),
+    (
+        "due_bill_overdue",
+        "Bill Overdue Notice",
+        "Dear {student_name}, bill {bill_number} for {currency_symbol} {amount} was due on {due_date} and is now overdue. Please settle your dues. {company_name}",
+    ),
+    (
+        "proxy_class_notification",
+        "Proxy Class Notification",
+        "Dear {student_name}, your {subject_name} class on {class_date} will be taken by {proxy_teacher_name} as substitute for {original_teacher_name}. {company_name}",
     ),
 )
 
@@ -83,6 +104,32 @@ SMS_EVENT_FIELDS = {
         "certificate_date",
     },
     "attendance_absence": COMMON_TEMPLATE_FIELDS | {"student_name", "attendance_date"},
+    "due_bill_reminder": COMMON_TEMPLATE_FIELDS
+    | {
+        "student_name",
+        "course_name",
+        "bill_number",
+        "amount",
+        "due_date",
+        "period",
+    },
+    "due_bill_overdue": COMMON_TEMPLATE_FIELDS
+    | {
+        "student_name",
+        "course_name",
+        "bill_number",
+        "amount",
+        "due_date",
+        "period",
+    },
+    "proxy_class_notification": COMMON_TEMPLATE_FIELDS
+    | {
+        "student_name",
+        "subject_name",
+        "class_date",
+        "proxy_teacher_name",
+        "original_teacher_name",
+    },
 }
 
 
@@ -563,6 +610,72 @@ class NotificationService:
                     self.dispatch(log_id)
         return queued, skipped
 
+    def queue_auto_absence_sms(
+        self,
+        attendance_date: str,
+        student_ids: list[int],
+        *,
+        asynchronous: bool = True,
+    ) -> tuple[list[int], list[str]]:
+        """Queue automated daily absence SMS with deterministic per-day deduplication.
+
+        Uses entity_type = f"auto_absence_{attendance_date}" and entity_id = student_id
+        so that subsequent invocations on the same day never re-notify the same student.
+        """
+        if not self.settings.get_bool("sms_enabled", False):
+            return [], ["SMS notification is disabled in Settings."]
+
+        provider = self.validate_provider_configuration()
+        queued: list[int] = []
+        skipped: list[str] = []
+        clean_date_tag = str(attendance_date or "").replace("/", "-").strip()
+        entity_type = f"auto_absence_{clean_date_tag}"[:50]
+
+        for student_id in dict.fromkeys(int(value) for value in student_ids):
+            existing = self.db.query_one(
+                "SELECT id FROM sms_delivery_log WHERE event_key='attendance_absence' "
+                "AND entity_type=? AND entity_id=?",
+                (entity_type, student_id),
+            )
+            if existing:
+                skipped.append(f"Student #{student_id}: Already notified for {attendance_date}.")
+                continue
+
+            try:
+                details = self.absence_sms_details(student_id, attendance_date)
+                recipient = self.normalize_recipient(details["contact"])
+            except Exception as exc:
+                skipped.append(f"Student #{student_id}: {exc}")
+                continue
+
+            try:
+                log_id = self.db.execute(
+                    "INSERT INTO sms_delivery_log "
+                    "(event_key,entity_type,entity_id,recipient,message_text,provider,status) "
+                    "VALUES ('attendance_absence',?,?,?,?,?,'Pending')",
+                    (
+                        entity_type,
+                        student_id,
+                        recipient,
+                        details["message"],
+                        provider,
+                    ),
+                )
+                queued.append(log_id)
+            except sqlite3.IntegrityError:
+                skipped.append(f"Student #{student_id}: Already queued for {attendance_date}.")
+            except Exception as exc:
+                skipped.append(f"Student #{student_id}: {exc}")
+
+        if queued:
+            if asynchronous:
+                self.dispatch_async()
+            else:
+                for log_id in queued:
+                    self.dispatch(log_id)
+
+        return queued, skipped
+
     def send_test(self, recipient: str, message: str) -> int:
         clean_recipient = self.normalize_recipient(recipient)
         clean_message = message.strip()
@@ -669,3 +782,227 @@ class NotificationService:
             "FROM sms_delivery_log ORDER BY id DESC LIMIT ?",
             (limit,),
         )
+
+    # -------------------------------------------------------------------------
+    # WhatsApp Messaging & 1-Click Launchers
+    # -------------------------------------------------------------------------
+
+    def build_whatsapp_link(self, recipient: str, message: str) -> str:
+        """Construct standard wa.me click-to-chat URL with pre-filled message text."""
+        country = self.settings.get("whatsapp_country_code", "977") or "977"
+        return build_whatsapp_click_to_chat_url(recipient, message, country)
+
+    def build_bill_whatsapp_message(self, bill_id: int) -> dict[str, str]:
+        """Generate a complete, professionally formatted WhatsApp billing notice and 1-click URL."""
+        row = self.db.query_one(
+            "SELECT b.id, b.bill_number, b.billing_period, b.issue_date, b.due_date, "
+            "b.total_amount, b.paid_amount, b.status, s.student_name, s.contact, "
+            "s.parent_name, c.course_name "
+            "FROM due_bills b "
+            "JOIN enrollments e ON e.id = b.enrollment_id "
+            "JOIN students s ON s.id = e.student_id "
+            "JOIN courses c ON c.id = e.course_id "
+            "WHERE b.id = ?",
+            (bill_id,),
+        )
+        if not row:
+            raise ValueError(f"Bill #{bill_id} was not found.")
+
+        comp = self.company_context()
+        company_name = comp.get("company_name") or "EXPERT LEARNING HUB"
+        company_phone = comp.get("company_phone") or ""
+
+        student_name = row["student_name"] or "Student"
+        bill_number = row["bill_number"] or f"BILL-{bill_id}"
+        course = row["course_name"] or "Course"
+        period = row["billing_period"] or ""
+        due_date = row["due_date"] or ""
+        total_amt = Decimal(str(row["total_amount"] or 0))
+        paid_amt = Decimal(str(row["paid_amount"] or 0))
+        remaining = total_amt - paid_amt
+
+        contact = (row["contact"] or "").strip()
+
+        acc_info = f"Kamana Sewa Bikas Bank: 08000300919240000001 ({company_name})\n• Fonepay / eSewa: {company_phone or '9860962645'}"
+        try:
+            inst_acc = self.db.query_one(
+                "SELECT account_name, bank_name, account_number, account_holder FROM accounts "
+                "WHERE status='Active' AND is_billing_default=1 LIMIT 1"
+            )
+            if not inst_acc:
+                inst_acc = self.db.query_one(
+                    "SELECT account_name, bank_name, account_number, account_holder FROM accounts "
+                    "WHERE status='Active' LIMIT 1"
+                )
+            if inst_acc:
+                b_name = inst_acc["bank_name"] or "Bank"
+                acc_no = inst_acc["account_number"] or ""
+                holder = inst_acc["account_holder"] or inst_acc["account_name"] or company_name
+                parts = []
+                if acc_no:
+                    parts.append(f"{b_name}: {acc_no} ({holder})")
+                if company_phone:
+                    parts.append(f"Fonepay / eSewa: {company_phone}")
+                if parts:
+                    acc_info = "\n• ".join(parts)
+        except Exception:
+            pass
+
+        phone_footer = f"\nFor inquiries, call {company_phone}." if company_phone else ""
+
+        message = (
+            f"*{company_name}*\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"📌 *DUE BILL NOTICE*\n\n"
+            f"Dear *{student_name}*,\n"
+            f"Your tuition fee invoice for *{course}* ({period}) is ready.\n\n"
+            f"• Bill No: *{bill_number}*\n"
+            f"• Total Amount: *Rs. {total_amt:,.2f}*\n"
+            f"• Paid Amount: *Rs. {paid_amt:,.2f}*\n"
+            f"• *Amount Due: Rs. {remaining:,.2f}*\n"
+            f"• Due Date: *{due_date}*\n\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"💳 *How to Pay:*\n"
+            f"• Scan the Fonepay / Bank QR code on your printed bill, or\n"
+            f"• Transfer to:\n• {acc_info}\n\n"
+            f"_Please settle before {due_date}. If already paid, please ignore this notice._"
+            f"{phone_footer}"
+        )
+
+        wa_url = ""
+        if contact:
+            try:
+                wa_url = self.build_whatsapp_link(contact, message)
+            except Exception:
+                pass
+
+        return {
+            "bill_id": str(bill_id),
+            "bill_number": bill_number,
+            "student_name": student_name,
+            "recipient": contact,
+            "parent_name": dict(row).get("parent_name") or "",
+            "amount_due": f"{remaining:,.2f}",
+            "message": message,
+            "whatsapp_url": wa_url,
+        }
+
+    def build_payment_whatsapp_message(self, kind: str, record_id: int) -> dict[str, str]:
+        """Generate a complete payment confirmation receipt message for WhatsApp."""
+        comp = self.company_context()
+        company_name = comp.get("company_name") or "EXPERT LEARNING HUB"
+        company_phone = comp.get("company_phone") or ""
+
+        contact = ""
+        student_name = "Student"
+        receipt_no = f"REC-{record_id}"
+        amount = Decimal("0")
+        balance = Decimal("0")
+        method = "Cash"
+        date_str = ""
+
+        if kind == "student":
+            row = self.db.query_one(
+                "SELECT st.*, s.student_name, s.contact, COALESCE(c.course_name, '') course_name "
+                "FROM student_transactions st "
+                "JOIN students s ON s.id = st.student_id "
+                "LEFT JOIN enrollments e ON e.id = st.enrollment_id "
+                "LEFT JOIN courses c ON c.id = e.course_id "
+                "WHERE st.id = ?",
+                (record_id,),
+            )
+            if row:
+                student_name = row["student_name"] or "Student"
+                contact = (row["contact"] or "").strip()
+                receipt_no = row["receipt_no"] or f"REC-{record_id}"
+                amount = Decimal(str(row["payment_amount"] or 0))
+                method = row["payment_method"] or "Cash"
+                date_str = row["transaction_date"] or ""
+                balance = Decimal("0")
+                if dict(row).get("enrollment_id"):
+                    due_row = self.db.query_one(
+                        "SELECT COALESCE(SUM(total_amount - paid_amount), 0) bal FROM due_bills "
+                        "WHERE enrollment_id = ? AND status != 'Paid'",
+                        (row["enrollment_id"],),
+                    )
+                    if due_row:
+                        balance = max(Decimal("0"), Decimal(str(due_row["bal"])))
+
+        phone_footer = f"\nContact: {company_phone}" if company_phone else ""
+
+        message = (
+            f"*{company_name}*\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"✅ *PAYMENT CONFIRMATION*\n\n"
+            f"Dear *{student_name}*,\n"
+            f"We have received your payment. Thank you!\n\n"
+            f"• Receipt No: *{receipt_no}*\n"
+            f"• Amount Paid: *Rs. {amount:,.2f}*\n"
+            f"• Payment Date: *{date_str}*\n"
+            f"• Method: *{method}*\n"
+            f"• Remaining Balance: *Rs. {balance:,.2f}*\n\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"_Thank you for learning with us!_{phone_footer}"
+        )
+
+        wa_url = ""
+        if contact:
+            try:
+                wa_url = self.build_whatsapp_link(contact, message)
+            except Exception:
+                pass
+
+        return {
+            "record_id": str(record_id),
+            "receipt_number": receipt_no,
+            "student_name": student_name,
+            "recipient": contact,
+            "amount_paid": f"{amount:,.2f}",
+            "balance": f"{balance:,.2f}",
+            "message": message,
+            "whatsapp_url": wa_url,
+        }
+
+    def send_whatsapp(self, recipient: str, message: str) -> WhatsAppResponse:
+        """Dispatch a message via the configured automated WhatsApp Provider (Meta Cloud or Gateway)."""
+        provider_mode = self.settings.get("whatsapp_provider", "1-Click Web/App (Free)")
+        timeout = max(3, self.settings.get_int("sms_timeout_seconds", 15))
+        provider = create_whatsapp_provider(provider_mode, self.settings, self.config, timeout=timeout)
+
+        if not provider:
+            return WhatsAppResponse(
+                success=False,
+                code="NO_API_PROVIDER",
+                message=(
+                    "Automated WhatsApp sending requires Meta Cloud API or Gateway API to be configured in Settings. "
+                    "Use the 'Open WhatsApp' 1-click button instead."
+                ),
+            )
+
+        resp = provider.send(recipient, message)
+
+        status = "Sent" if resp.success else "Failed"
+        prov_key = f"whatsapp_{provider.name.lower().replace(' ', '_')}"
+        clean_rec = re.sub(r"\D", "", str(recipient or ""))[-13:]
+        try:
+            self.db.execute(
+                "INSERT INTO sms_delivery_log "
+                "(event_key, entity_type, entity_id, recipient, message_text, provider, status, "
+                "response_code, response_message, last_attempt_at, sent_at) "
+                "VALUES ('whatsapp_manual', 'whatsapp', ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, "
+                "CASE WHEN ?='Sent' THEN CURRENT_TIMESTAMP ELSE NULL END)",
+                (
+                    secrets.randbelow(2_000_000_000) + 1,
+                    clean_rec,
+                    message[:500],
+                    prov_key,
+                    status,
+                    resp.code,
+                    resp.message,
+                    status,
+                ),
+            )
+        except Exception:
+            pass
+
+        return resp

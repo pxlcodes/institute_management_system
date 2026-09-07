@@ -716,25 +716,29 @@ class ServiceTests(unittest.TestCase):
                 "INSERT INTO courses (course_name,category,billing_type,default_fee,status) VALUES (?,?,?,?,?)",
                 ("Test Tuition", "Tuition", "Monthly", 1000, "Active"),
             )
+            test_date = date(2026, 8, 28)
             absent_id = db.execute(
                 "INSERT INTO students (student_name,class_name,joining_date,status) VALUES (?,?,?,?)",
-                ("Absent Student", "10", date.today().isoformat(), "Active"),
+                ("Absent Student", "10", test_date.isoformat(), "Active"),
             )
             present_id = db.execute(
                 "INSERT INTO students (student_name,class_name,joining_date,status) VALUES (?,?,?,?)",
-                ("Present Student", "10", date.today().isoformat(), "Active"),
+                ("Present Student", "10", test_date.isoformat(), "Active"),
             )
             for student_id in (absent_id, present_id):
                 db.execute(
                     "INSERT INTO enrollments (student_id,course_id,start_date,status) VALUES (?,?,?,?)",
-                    (student_id, course_id, date.today().isoformat(), "Active"),
+                    (student_id, course_id, test_date.isoformat(), "Active"),
                 )
             db.execute(
                 "INSERT INTO attendance_logs (device_user_id,person_type,person_id,occurred_at,event_type) VALUES (?,?,?,?,?)",
-                ("present-1", "student", present_id, f"{date.today().isoformat()} 09:00:00", "Check In"),
+                ("present-1", "student", present_id, f"{test_date.isoformat()} 09:00:00", "Check In"),
             )
             service = AttendanceService(AttendanceRepository(db), DisabledAttendanceDevice())
-            absent = service.students_absent_today()
+            with patch("elh.services.attendance.datetime") as mock_dt:
+                mock_dt.now.return_value = datetime(2026, 8, 28, 10, 0, 0)
+                mock_dt.fromisoformat = datetime.fromisoformat
+                absent = service.students_absent_today()
             self.assertEqual([row["student_name"] for row in absent], ["Absent Student"])
             self.assertEqual(absent[0]["device_status"], "Not linked")
 
@@ -995,6 +999,11 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(auth.authenticate("admin",config.admin_password).role,"admin")
             self.assertEqual(auth.authenticate("maintenance",config.maintenance_password).role,"maintenance")
             self.assertIsNone(auth.authenticate("operator","wrong"))
+
+            # If admin role was incorrectly changed to operator, ensure_initial_users restores it
+            db.execute("UPDATE app_users SET role = 'operator' WHERE username = 'admin'")
+            auth.ensure_initial_users()
+            self.assertEqual(auth.authenticate("admin",config.admin_password).role,"admin")
 
     def test_user_administration_permissions_password_status_and_audit(self):
         with tempfile.TemporaryDirectory() as folder:

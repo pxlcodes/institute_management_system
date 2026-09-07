@@ -87,6 +87,14 @@ class AppConfig:
     aakash_sms_endpoint: str = "https://sms.aakashsms.com/sms/v3/send"
     sparrow_sms_token: str = ""
     sparrow_sms_endpoint: str = "https://api.sparrowsms.com/v2/sms/"
+    whatsapp_enabled: bool = True
+    whatsapp_provider: str = "1-Click Web/App (Free)"
+    whatsapp_country_code: str = "977"
+    whatsapp_meta_phone_number_id: str = ""
+    whatsapp_meta_access_token: str = ""
+    whatsapp_gateway_endpoint: str = ""
+    whatsapp_gateway_token: str = ""
+    whatsapp_gateway_instance_id: str = ""
     operator_username: str = "operator"
     operator_password: str = "Operator@2025"
     admin_username: str = "admin"
@@ -95,6 +103,9 @@ class AppConfig:
     maintenance_password: str = "Maintenance@2025"
     secret_key: str = ""
     web_session_expiry_minutes: int = 1440
+    gemini_api_key: str = ""
+    ai_provider: str = "gemini"
+    ai_model: str = "gemini-3.6-flash"
 
     def public_values(self) -> dict[str, str]:
         """Serializable values suitable for an admin/configuration API."""
@@ -113,6 +124,9 @@ def load_config(
     path = Path(env_file) if env_file else DEFAULT_ENV_FILE
     values = _read_env_file(path)
     values.update(dict(os.environ if environ is None else environ))
+    gemini_key = values.get("ELH_GEMINI_API_KEY") or values.get("GEMINI_API_KEY") or AppConfig.gemini_api_key
+    if gemini_key and not os.environ.get("GEMINI_API_KEY"):
+        os.environ["GEMINI_API_KEY"] = gemini_key
     get = lambda key, default: values.get(f"ELH_{key}", str(default))
     def path_value(key: str, default: Path) -> Path:
         candidate = Path(get(key, default)).expanduser()
@@ -193,6 +207,14 @@ def load_config(
         aakash_sms_endpoint=get("AAKASH_SMS_ENDPOINT", AppConfig.aakash_sms_endpoint),
         sparrow_sms_token=get("SPARROW_SMS_TOKEN", AppConfig.sparrow_sms_token),
         sparrow_sms_endpoint=get("SPARROW_SMS_ENDPOINT", AppConfig.sparrow_sms_endpoint),
+        whatsapp_enabled=_bool(get("WHATSAPP_ENABLED", str(AppConfig.whatsapp_enabled))),
+        whatsapp_provider=get("WHATSAPP_PROVIDER", AppConfig.whatsapp_provider),
+        whatsapp_country_code=get("WHATSAPP_COUNTRY_CODE", AppConfig.whatsapp_country_code),
+        whatsapp_meta_phone_number_id=get("WHATSAPP_META_PHONE_NUMBER_ID", AppConfig.whatsapp_meta_phone_number_id),
+        whatsapp_meta_access_token=get("WHATSAPP_META_ACCESS_TOKEN", AppConfig.whatsapp_meta_access_token),
+        whatsapp_gateway_endpoint=get("WHATSAPP_GATEWAY_ENDPOINT", AppConfig.whatsapp_gateway_endpoint),
+        whatsapp_gateway_token=get("WHATSAPP_GATEWAY_TOKEN", AppConfig.whatsapp_gateway_token),
+        whatsapp_gateway_instance_id=get("WHATSAPP_GATEWAY_INSTANCE_ID", AppConfig.whatsapp_gateway_instance_id),
         operator_username=get("OPERATOR_USERNAME", AppConfig.operator_username),
         operator_password=get("OPERATOR_PASSWORD", AppConfig.operator_password),
         admin_username=get("ADMIN_USERNAME", AppConfig.admin_username),
@@ -201,6 +223,9 @@ def load_config(
         maintenance_password=get("MAINTENANCE_PASSWORD", AppConfig.maintenance_password),
         secret_key=get("SECRET_KEY", AppConfig.secret_key),
         web_session_expiry_minutes=max(1, int(get("WEB_SESSION_EXPIRY_MINUTES", AppConfig.web_session_expiry_minutes))),
+        gemini_api_key=values.get("ELH_GEMINI_API_KEY") or values.get("GEMINI_API_KEY") or AppConfig.gemini_api_key,
+        ai_provider=get("AI_PROVIDER", AppConfig.ai_provider),
+        ai_model=get("AI_MODEL", AppConfig.ai_model),
     )
 
 
@@ -248,6 +273,14 @@ EDITABLE_ENV_KEYS = {
     "aakash_sms_endpoint": "ELH_AAKASH_SMS_ENDPOINT",
     "sparrow_sms_token": "ELH_SPARROW_SMS_TOKEN",
     "sparrow_sms_endpoint": "ELH_SPARROW_SMS_ENDPOINT",
+    "whatsapp_enabled": "ELH_WHATSAPP_ENABLED",
+    "whatsapp_provider": "ELH_WHATSAPP_PROVIDER",
+    "whatsapp_country_code": "ELH_WHATSAPP_COUNTRY_CODE",
+    "whatsapp_meta_phone_number_id": "ELH_WHATSAPP_META_PHONE_NUMBER_ID",
+    "whatsapp_meta_access_token": "ELH_WHATSAPP_META_ACCESS_TOKEN",
+    "whatsapp_gateway_endpoint": "ELH_WHATSAPP_GATEWAY_ENDPOINT",
+    "whatsapp_gateway_token": "ELH_WHATSAPP_GATEWAY_TOKEN",
+    "whatsapp_gateway_instance_id": "ELH_WHATSAPP_GATEWAY_INSTANCE_ID",
     "operator_username": "ELH_OPERATOR_USERNAME",
     "operator_password": "ELH_OPERATOR_PASSWORD",
     "admin_username": "ELH_ADMIN_USERNAME",
@@ -256,6 +289,9 @@ EDITABLE_ENV_KEYS = {
     "maintenance_password": "ELH_MAINTENANCE_PASSWORD",
     "secret_key": "ELH_SECRET_KEY",
     "web_session_expiry_minutes": "ELH_WEB_SESSION_EXPIRY_MINUTES",
+    "gemini_api_key": "ELH_GEMINI_API_KEY",
+    "ai_provider": "ELH_AI_PROVIDER",
+    "ai_model": "ELH_AI_MODEL",
 }
 
 # Infrastructure and secrets must remain outside the institution database.  The
@@ -273,7 +309,7 @@ ENVIRONMENT_ONLY_KEYS = {
     "pos_printer_driver", "pos_printer_host",
     "pos_printer_port", "pos_printer_chars_per_line", "aakash_sms_token",
     "aakash_sms_endpoint", "sparrow_sms_token", "sparrow_sms_endpoint",
-    "secret_key", "web_session_expiry_minutes",
+    "secret_key", "web_session_expiry_minutes", "gemini_api_key",
 }
 
 

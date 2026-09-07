@@ -49,6 +49,7 @@ from elh.ui.desktop.pages import (
     TeachersPage, TransfersPage, CoursesPage, SchoolsPage, DueBillsPage,
     ReportsPage,
     AttendancePage,
+    AssistantPage,
     DeviceHealthPage,
     PosPrinterPage,
     CertificatesPage,
@@ -61,7 +62,7 @@ from elh.ui.desktop.pages import (
 # ---------------------------------------------------------------------------
 
 NAV_ICONS = {
-    "Dashboard": "📊", "Tasks & Bugs": "📝", "Students": "🎓",
+    "Dashboard": "📊", "AI Assistant": "🤖", "Tasks & Bugs": "📝", "Students": "🎓",
     "Enrollments": "📋", "Due Bills": "🧾", "Certificates": "🏆",
     "Student Accounts": "👛", "Reports": "📄", "Courses": "📚",
     "Schools": "🏫", "Staff": "👥", "Staff Advances": "💵",
@@ -168,50 +169,50 @@ class ManagementApp(tk.Tk):
         except tk.TclError:
             pass
         style.configure("TFrame", background="#EEF3F8")
-        style.configure("TLabel", background="#EEF3F8", foreground="#334155", font=("Segoe UI",10))
+        style.configure("TLabel", background="#EEF3F8", foreground="#334155", font=("Segoe UI", 10))
         style.configure("Title.TLabel", background="#EEF3F8", foreground="#102A43", font=("Segoe UI Variable Display", 23, "bold"))
         style.configure("Section.TLabel", background="#12263A", foreground="#FFFFFF", font=("Segoe UI", 13, "bold"))
         style.configure("Card.TLabel", background="#FFFFFF", foreground="#167D8D", font=("Segoe UI", 18, "bold"))
         style.configure("Toolbar.TFrame", background="#EEF3F8")
-        style.configure("Hint.TLabel", background="#EEF3F8", foreground="#64748B", font=("Segoe UI",9,"italic"))
-        style.configure("SubTitle.TLabel", background="#EEF3F8", foreground="#183B56", font=("Segoe UI Variable Display",14,"bold"))
+        style.configure("Hint.TLabel", background="#EEF3F8", foreground="#64748B", font=("Segoe UI", 9, "italic"))
+        style.configure("SubTitle.TLabel", background="#EEF3F8", foreground="#183B56", font=("Segoe UI Variable Display", 14, "bold"))
         style.configure("DashboardCard.TFrame", background="#F8FAFC")
-        style.configure("DashboardCardTitle.TLabel", background="#F8FAFC", foreground="#64748B", font=("Segoe UI",9,"bold"))
-        style.configure("DashboardCardValue.TLabel", background="#F8FAFC", foreground="#087F75", font=("Segoe UI Variable Display",19,"bold"))
+        style.configure("DashboardCardTitle.TLabel", background="#F8FAFC", foreground="#64748B", font=("Segoe UI", 9, "bold"))
+        style.configure("DashboardCardValue.TLabel", background="#F8FAFC", foreground="#087F75", font=("Segoe UI Variable Display", 19, "bold"))
         style.configure("Header.TFrame", background="#FFFFFF")
-        style.configure("HeaderTitle.TLabel", background="#FFFFFF", foreground="#102A43", font=("Segoe UI Variable Display",16,"bold"))
-        style.configure("HeaderMeta.TLabel", background="#FFFFFF", foreground="#64748B", font=("Segoe UI",9))
-        style.configure("Accent.TButton", background="#00A88F", foreground="#FFFFFF", font=("Segoe UI",10,"bold"), padding=(15,10), borderwidth=0)
-        style.map("Accent.TButton", background=[("active","#008F7A"),("pressed","#007564")])
-        style.configure("TButton", font=("Segoe UI",9,"bold"), padding=(12,9), background="#E3EBF3", foreground="#183B56", borderwidth=0, relief="flat", focusthickness=0, focuscolor="#E3EBF3")
-        style.map("TButton", background=[("active","#D2DEE9"),("pressed","#C5D4E1"),("disabled","#EDF1F5")],foreground=[("disabled","#94A3B8")])
-        style.configure("TMenubutton", font=("Segoe UI",9,"bold"), padding=(12,9), background="#E3EBF3", foreground="#183B56", borderwidth=0, relief="flat")
+        style.configure("HeaderTitle.TLabel", background="#FFFFFF", foreground="#102A43", font=("Segoe UI Variable Display", 16, "bold"))
+        style.configure("HeaderMeta.TLabel", background="#FFFFFF", foreground="#64748B", font=("Segoe UI", 9))
+        style.configure("Accent.TButton", background="#00A88F", foreground="#FFFFFF", font=("Segoe UI", 10, "bold"), padding=(15, 10), borderwidth=0)
+        style.map("Accent.TButton", background=[("active", "#008F7A"), ("pressed", "#007564")])
+        style.configure("TButton", font=("Segoe UI", 9, "bold"), padding=(12, 9), background="#E3EBF3", foreground="#183B56", borderwidth=0, relief="flat", focusthickness=0, focuscolor="#E3EBF3")
+        style.map("TButton", background=[("active", "#D2DEE9"), ("pressed", "#C5D4E1"), ("disabled", "#EDF1F5")], foreground=[("disabled", "#94A3B8")])
+        style.configure("TMenubutton", font=("Segoe UI", 9, "bold"), padding=(12, 9), background="#E3EBF3", foreground="#183B56", borderwidth=0, relief="flat")
         style.map("TMenubutton", background=[("active", "#D2DEE9"), ("pressed", "#C5D4E1")])
-        style.configure("TEntry", padding=(7,6), fieldbackground="#FFFFFF", bordercolor="#CBD5E1")
-        style.configure("TCombobox", padding=(6,5), fieldbackground="#FFFFFF", bordercolor="#CBD5E1")
-        style.configure("Danger.TButton", background="#DC4C4C", foreground="#FFFFFF", font=("Segoe UI",9,"bold"), padding=(12,9), borderwidth=0, relief="flat", focusthickness=0)
-        style.map("Danger.TButton",background=[("active","#C83E3E"),("pressed","#B83232")])
+        style.configure("TEntry", padding=(7, 6), fieldbackground="#FFFFFF", bordercolor="#CBD5E1")
+        style.configure("TCombobox", padding=(6, 5), fieldbackground="#FFFFFF", bordercolor="#CBD5E1")
+        style.configure("Danger.TButton", background="#DC4C4C", foreground="#FFFFFF", font=("Segoe UI", 9, "bold"), padding=(12, 9), borderwidth=0, relief="flat", focusthickness=0)
+        style.map("Danger.TButton", background=[("active", "#C83E3E"), ("pressed", "#B83232")])
         style.configure("Sidebar.TFrame", background="#12263A")
-        style.configure("Sidebar.TLabel", background="#12263A", foreground="#7DD3C7", font=("Segoe UI",8,"bold"))
-        style.configure("SidebarGroup.TLabel", background="#12263A", foreground="#7DD3C7", font=("Segoe UI",8,"bold"))
-        style.configure("SidebarGroup.TButton", background="#12263A", foreground="#7DD3C7", anchor="w", font=("Segoe UI",8,"bold"), padding=(10,7), borderwidth=0)
-        style.map("SidebarGroup.TButton", background=[("active","#1D3B52")], foreground=[("active","#A7F3D0")])
-        style.configure("Sidebar.TButton", background="#12263A", foreground="#DCE8F2", anchor="w", font=("Segoe UI",11), padding=(15,11), borderwidth=0)
-        style.map("Sidebar.TButton", background=[("active","#1D3B52"),("pressed","#00A88F")], foreground=[("active","#FFFFFF")])
-        style.configure("SidebarActive.TButton", background="#00A88F", foreground="#FFFFFF", anchor="w", font=("Segoe UI",11,"bold"), padding=(15,11), borderwidth=0)
+        style.configure("Sidebar.TLabel", background="#12263A", foreground="#7DD3C7", font=("Segoe UI", 8, "bold"))
+        style.configure("SidebarGroup.TLabel", background="#12263A", foreground="#7DD3C7", font=("Segoe UI", 8, "bold"))
+        style.configure("SidebarGroup.TButton", background="#12263A", foreground="#7DD3C7", anchor="w", font=("Segoe UI", 8, "bold"), padding=(10, 7), borderwidth=0)
+        style.map("SidebarGroup.TButton", background=[("active", "#1D3B52")], foreground=[("active", "#A7F3D0")])
+        style.configure("Sidebar.TButton", background="#12263A", foreground="#DCE8F2", anchor="w", font=("Segoe UI", 11), padding=(15, 11), borderwidth=0)
+        style.map("Sidebar.TButton", background=[("active", "#1D3B52"), ("pressed", "#00A88F")], foreground=[("active", "#FFFFFF")])
+        style.configure("SidebarActive.TButton", background="#00A88F", foreground="#FFFFFF", anchor="w", font=("Segoe UI", 11, "bold"), padding=(15, 11), borderwidth=0)
         style.configure("TLabelframe", background="#FFFFFF", bordercolor="#CBD5E1", relief="solid")
-        style.configure("TLabelframe.Label", background="#FFFFFF", foreground="#17324D", font=("Segoe UI",11,"bold"))
+        style.configure("TLabelframe.Label", background="#FFFFFF", foreground="#17324D", font=("Segoe UI", 11, "bold"))
         style.configure("Form.TLabelframe", background="#F8FAFC", bordercolor="#D7E1EA", relief="flat", borderwidth=1)
-        style.configure("Form.TLabelframe.Label", background="#F8FAFC", foreground="#183B56", font=("Segoe UI Variable Display",11,"bold"))
+        style.configure("Form.TLabelframe.Label", background="#F8FAFC", foreground="#183B56", font=("Segoe UI Variable Display", 11, "bold"))
         style.configure("Form.TFrame", background="#F8FAFC")
-        style.configure("Form.TLabel", background="#F8FAFC", foreground="#334155", font=("Segoe UI",9))
-        style.configure("FormValue.TLabel", background="#F8FAFC", foreground="#087F75", font=("Segoe UI Variable Display",12,"bold"))
-        style.configure("Form.TRadiobutton", background="#F8FAFC", foreground="#334155", font=("Segoe UI",9))
-        style.map("Form.TRadiobutton",background=[("active","#F8FAFC")])
-        style.configure("Treeview", background="#FFFFFF", fieldbackground="#FFFFFF", foreground="#334155", rowheight=34, borderwidth=0, font=("Segoe UI",9))
-        style.map("Treeview", background=[("selected","#0F9D8A")], foreground=[("selected","#FFFFFF")])
-        style.configure("Treeview.Heading", background="#183B56", foreground="#FFFFFF", font=("Segoe UI", 10, "bold"), padding=(8,10), relief="flat")
-        style.map("Treeview.Heading", background=[("active","#34566F")])
+        style.configure("Form.TLabel", background="#F8FAFC", foreground="#334155", font=("Segoe UI", 9))
+        style.configure("FormValue.TLabel", background="#F8FAFC", foreground="#087F75", font=("Segoe UI Variable Display", 12, "bold"))
+        style.configure("Form.TRadiobutton", background="#F8FAFC", foreground="#334155", font=("Segoe UI", 9))
+        style.map("Form.TRadiobutton", background=[("active", "#F8FAFC")])
+        style.configure("Treeview", background="#FFFFFF", fieldbackground="#FFFFFF", foreground="#334155", rowheight=34, borderwidth=0, font=("Segoe UI", 9))
+        style.map("Treeview", background=[("selected", "#0F9D8A")], foreground=[("selected", "#FFFFFF")])
+        style.configure("Treeview.Heading", background="#183B56", foreground="#FFFFFF", font=("Segoe UI", 10, "bold"), padding=(8, 10), relief="flat")
+        style.map("Treeview.Heading", background=[("active", "#34566F")])
 
     def _build_menu(self):
         menu = tk.Menu(self)
@@ -274,22 +275,23 @@ class ManagementApp(tk.Tk):
         workspace = ttk.Frame(shell)
         self.workspace = workspace
         workspace.pack(side="left", fill="both", expand=True)
-        header = ttk.Frame(workspace, style="Header.TFrame", padding=(22,12))
+        header = ttk.Frame(workspace, style="Header.TFrame", padding=(22, 12))
         header.pack(fill="x")
         self.page_title = tk.StringVar(value=nav_caption("Dashboard"))
-        ttk.Label(header,textvariable=self.page_title,style="HeaderTitle.TLabel").pack(side="left")
+        ttk.Label(header, textvariable=self.page_title, style="HeaderTitle.TLabel").pack(side="left")
         ttk.Button(header, text="☰ Menu", command=self.toggle_sidebar).pack(side="left", padx=(12, 0))
-        ttk.Button(header,text="🚪 Logout",command=self.logout).pack(side="right",padx=(3,0))
-        ttk.Button(header,text="🔒 Lock",command=self.lock_application).pack(side="right",padx=3)
-        ttk.Label(header,text=f"{self.session.display_name or self.session.username}  |  {self.session.role.title()}",style="HeaderMeta.TLabel").pack(side="right",padx=8)
+        ttk.Button(header, text="🚪 Logout", command=self.logout).pack(side="right", padx=(3, 0))
+        ttk.Button(header, text="🔒 Lock", command=self.lock_application).pack(side="right", padx=3)
+        ttk.Label(header, text=f"{self.session.display_name or self.session.username}  |  {self.session.role.title()}", style="HeaderMeta.TLabel").pack(side="right", padx=8)
         ttk.Separator(workspace).pack(fill="x")
-        content = ttk.Frame(workspace, padding=(12,8,12,12))
+        content = ttk.Frame(workspace, padding=(12, 8, 12, 12))
         content.pack(fill="both", expand=True)
         content.rowconfigure(0, weight=1);content.columnconfigure(0, weight=1)
 
         menu_groups = [
             ("OPERATIONS", [
                 ("Dashboard", DashboardPage, "dashboard.view"),
+                ("AI Assistant", AssistantPage, "assistant.view"),
                 ("Tasks & Bugs", WorkItemsPage, "dashboard.view"),
                 ("Reports", ReportsPage, "reports.view"),
             ]),
@@ -327,7 +329,7 @@ class ManagementApp(tk.Tk):
         self.pages: dict[str, BasePage] = {};self.nav_buttons = {};self.nav_groups={};self.page_groups={}
         first_page = None
         for group_name, page_classes in menu_groups:
-            page_classes = [item for item in page_classes if self.can(item[2])]
+            page_classes = [item for item in page_classes if self.can(item[2]) and (item[0] != "AI Assistant" or self.session.role in ("super_admin", "admin"))]
             if not page_classes:
                 continue
             group_body = ttk.Frame(sidebar, style="Sidebar.TFrame")
@@ -344,9 +346,14 @@ class ManagementApp(tk.Tk):
                 page.grid(row=0, column=0, sticky="nsew")
                 self.pages[name] = page
                 self.page_groups[name] = (group_name, group_body, group_button)
-                button=ttk.Button(group_body, text=f"  {nav_caption(name)}", style="Sidebar.TButton",
-                    command=lambda n=name: self.show_page(n), width=22)
-                button.pack(fill="x", pady=1);self.nav_buttons[name]=button
+                button = ttk.Button(
+                    group_body,
+                    text=f"  {nav_caption(name)}",
+                    style="Sidebar.TButton",
+                    command=lambda n=name: self.show_page(n),
+                )
+                button.pack(fill="x", pady=1)
+                self.nav_buttons[name] = button
                 if first_page is None:
                     first_page = name
 
@@ -725,6 +732,17 @@ class ManagementApp(tk.Tk):
                 )
             except Exception:
                 pass
+            if hasattr(self, "services"):
+                if hasattr(self.services, "automation"):
+                    try:
+                        self.services.automation.stop(timeout=1.0)
+                    except Exception:
+                        pass
+                if hasattr(self.services, "attendance_poller"):
+                    try:
+                        self.services.attendance_poller.stop(timeout=1.0)
+                    except Exception:
+                        pass
             self._cancel_idle_lock()
             self.destroy()
 
