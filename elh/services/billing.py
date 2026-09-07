@@ -1,6 +1,8 @@
 from __future__ import annotations
+import re
 from decimal import Decimal
 from pathlib import Path
+from typing import Iterable
 from elh.config import ROOT_DIR
 from elh.core.validation import validate_month
 
@@ -132,6 +134,50 @@ class BillingService:
             periods.append(f"{year:04d}/{month:02d}");month+=1
             if month==13:year+=1;month=1
         return periods
+
+    @staticmethod
+    def segregate_period(period: str) -> list[str]:
+        """Segregate a billing period expression (e.g. '2083/01 to 2083/03, 2083/04, 2083/05'
+        or '2083/01 to 2083/03' or '2083/01 - 2083/03') into discrete individual monthly periods:
+        ['2083/01', '2083/02', '2083/03', '2083/04', '2083/05']."""
+        if not period or not isinstance(period, str):
+            return []
+        parts = [p.strip() for p in period.split(",") if p.strip()]
+        result: list[str] = []
+        range_pattern = re.compile(r"^(\d{4}/\d{2})\s*(?:to|-)\s*(\d{4}/\d{2})$", re.IGNORECASE)
+        for part in parts:
+            match = range_pattern.match(part)
+            if match:
+                start_m, end_m = match.group(1), match.group(2)
+                try:
+                    expanded = BillingService._months(start_m, end_m)
+                    for m in expanded:
+                        if m not in result:
+                            result.append(m)
+                except Exception:
+                    if part not in result:
+                        result.append(part)
+            else:
+                if part not in result:
+                    result.append(part)
+        return result
+
+    @classmethod
+    def segregate_periods(cls, val: str | Iterable[str]) -> list[str]:
+        """Segregate any string or iterable of billing period expressions into discrete sorted months."""
+        if not val:
+            return []
+        if isinstance(val, str):
+            items = [val]
+        else:
+            items = list(val)
+        expanded: list[str] = []
+        for item in items:
+            for m in cls.segregate_period(str(item)):
+                if m not in expanded:
+                    expanded.append(m)
+        return sorted(expanded)
+
     def get_bill_arrears(self, bill) -> tuple[list[dict], Decimal, Decimal]:
         if not hasattr(self.repository, "get_unpaid_bills_for_student"):
             return [], Decimal("0"), max(Decimal("0"), bill.total_amount - bill.paid_amount)
@@ -157,10 +203,13 @@ class BillingService:
         for ob in older_bills:
             rem = max(Decimal("0"), ob.total_amount - ob.paid_amount)
             if rem > 0:
+                expanded_months = self.segregate_periods(ob.billing_period)
                 arrears.append({
                     "bill_id": ob.id,
                     "bill_number": ob.bill_number,
                     "billing_period": ob.billing_period,
+                    "months": expanded_months,
+                    "months_display": ", ".join(expanded_months) if expanded_months else ob.billing_period,
                     "course_name": ob.course_name,
                     "total_amount": ob.total_amount,
                     "paid_amount": ob.paid_amount,
@@ -468,9 +517,12 @@ class BillingService:
         total_paid = sum(b.paid_amount for b in bills)
         total_outstanding = sum(max(Decimal("0"), b.total_amount - b.paid_amount) for b in bills)
 
+        all_months = self.segregate_periods([b.billing_period for b in bills if b.billing_period])
+        months_label = f"{len(all_months)} month(s) ({len(bills)} bill(s))" if len(all_months) != len(bills) else f"{len(bills)} bill(s)"
+
         meta_data = [
             ["Student Name", student_name, "Student ID", f"#{target_student_id}"],
-            ["Course(s)", courses_str, "Unpaid Months", f"{len(bills)} bill(s)"],
+            ["Course(s)", courses_str, "Unpaid Months", months_label],
             ["Statement Date", bills[-1].issue_date, "Total Dues", f"{self.currency_symbol} {total_outstanding:,.2f}"],
         ]
         meta_table = Table(meta_data, colWidths=[32 * mm, 60 * mm, 32 * mm, 54 * mm])
@@ -489,9 +541,11 @@ class BillingService:
         table_rows = [["Bill No.", "Period", "Course", "Total Bill", "Paid", "Balance Due"]]
         for b in bills:
             bal = max(Decimal("0"), b.total_amount - b.paid_amount)
+            seg_b = self.segregate_period(b.billing_period)
+            period_str = f"{b.billing_period}\n({', '.join(seg_b)})" if len(seg_b) > 1 else b.billing_period
             table_rows.append([
                 b.bill_number,
-                b.billing_period,
+                period_str,
                 b.course_name,
                 f"{self.currency_symbol} {b.total_amount:,.2f}",
                 f"{self.currency_symbol} {b.paid_amount:,.2f}",
@@ -856,15 +910,23 @@ class BillingService:
         search_lower = (search or "").strip().lower()
         for sid, data in grouped.items():
             unpaid_count = len(data["bills"])
-            if unpaid_count < min_unpaid_months:
+            raw_periods = sorted(
+                dict.fromkeys(data["periods"]),
+                key=lambda p: (self.segregate_period(p)[0] if self.segregate_period(p) else p)
+            )
+            segregated_months = self.segregate_periods(data["periods"])
+            unpaid_months_count = len(segregated_months) if segregated_months else unpaid_count
+            periods_str = ", ".join(segregated_months) if segregated_months else ", ".join(raw_periods)
+
+            if unpaid_months_count < min_unpaid_months and unpaid_count < min_unpaid_months:
                 continue
+
             courses_str = ", ".join(sorted(data["courses"]))
-            periods_sorted = sorted(set(data["periods"]))
-            periods_str = ", ".join(periods_sorted)
             if search_lower:
-                match_text = f"{data['student_name']} {data['contact']} {courses_str} {periods_str}".lower()
+                match_text = f"{data['student_name']} {data['contact']} {courses_str} {periods_str} {' '.join(raw_periods)}".lower()
                 if search_lower not in match_text:
                     continue
+
             results.append({
                 "student_id": sid,
                 "student_name": data["student_name"],
@@ -872,7 +934,9 @@ class BillingService:
                 "course_name": courses_str,
                 "courses": sorted(data["courses"]),
                 "unpaid_bills_count": unpaid_count,
-                "periods": periods_sorted,
+                "unpaid_months_count": unpaid_months_count,
+                "periods": segregated_months,
+                "raw_periods": raw_periods,
                 "periods_display": periods_str,
                 "total_due": float(data["total_due"]),
                 "bill_ids": data["bill_ids"],
@@ -881,5 +945,5 @@ class BillingService:
                 "latest_due_date": data["latest_due_date"],
             })
 
-        results.sort(key=lambda x: (-x["unpaid_bills_count"], -x["total_due"], x["student_name"].lower()))
+        results.sort(key=lambda x: (-x["unpaid_months_count"], -x["unpaid_bills_count"], -x["total_due"], x["student_name"].lower()))
         return results

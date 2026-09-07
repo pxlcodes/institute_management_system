@@ -862,10 +862,16 @@ class NotificationService:
 
         phone_footer = f"\nFor inquiries, call {company_phone}." if company_phone else ""
 
+        from elh.services.billing import BillingService
+        seg_months = BillingService.segregate_period(period)
+        period_str = f"{period} ({', '.join(seg_months)})" if len(seg_months) > 1 else period
+
         if older_due_rows:
+            all_arr_periods = BillingService.segregate_periods([r["billing_period"] for r in older_due_rows if r["billing_period"]])
+            arr_count_desc = f"{len(all_arr_periods)} month(s)" if len(all_arr_periods) != len(older_due_rows) else f"{len(older_due_rows)} bill(s)"
             due_breakdown = (
-                f"• Current Bill ({period}): *Rs. {remaining:,.2f}*\n"
-                f"• Previous Arrears ({len(older_due_rows)} bill(s)): *Rs. {total_arrears:,.2f}*\n"
+                f"• Current Bill ({period_str}): *Rs. {remaining:,.2f}*\n"
+                f"• Previous Arrears ({arr_count_desc}): *Rs. {total_arrears:,.2f}*\n"
                 f"• *Grand Total Outstanding: Rs. {grand_total:,.2f}*"
             )
         else:

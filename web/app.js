@@ -2785,6 +2785,53 @@ async function enrollmentForm() {
   host.querySelector('form').onsubmit = async event => { event.preventDefault(); const payload = formData(event.target); ['student_id','course_id'].forEach(k => payload[k] = Number(payload[k])); ['monthly_fee','admission_fee','discount'].forEach(k => payload[k] = Number(payload[k])); try { await api('/enrollments', { method: 'POST', body: JSON.stringify(payload) }); host.remove(); go('enrollments'); } catch (error) { showError(error); } };
 }
 
+function segregatePeriod(period) {
+  if (!period || typeof period !== 'string') return [];
+  const parts = period.split(',').map(p => p.trim()).filter(Boolean);
+  const result = [];
+  const rangeRegex = /^(\d{4}\/\d{2})\s*(?:to|-)\s*(\d{4}\/\d{2})$/i;
+  for (const part of parts) {
+    const match = part.match(rangeRegex);
+    if (match) {
+      const [sy, sm] = match[1].split('/').map(Number);
+      const [ey, em] = match[2].split('/').map(Number);
+      if (ey < sy || (ey === sy && em < sm)) {
+        result.push(part);
+      } else {
+        let y = sy;
+        let m = sm;
+        while (y < ey || (y === ey && m <= em)) {
+          result.push(`${String(y).padStart(4, '0')}/${String(m).padStart(2, '0')}`);
+          m++;
+          if (m === 13) {
+            y++;
+            m = 1;
+          }
+        }
+      }
+    } else {
+      result.push(part);
+    }
+  }
+  return result;
+}
+
+function segregatePeriods(val) {
+  if (!val) return [];
+  const items = Array.isArray(val) ? val : [val];
+  const seen = new Set();
+  const res = [];
+  for (const item of items) {
+    for (const m of segregatePeriod(String(item))) {
+      if (!seen.has(m)) {
+        seen.add(m);
+        res.push(m);
+      }
+    }
+  }
+  return res.sort();
+}
+
 async function bills() {
   const rows = await api('/bills');
   const isStudent = me?.role === 'student';
@@ -2834,6 +2881,7 @@ async function bills() {
           contact: b.contact || '',
           courses: new Set(),
           periods: [],
+          raw_periods: [],
           total_due: 0,
           bill_ids: [],
           latest_bill_id: b.id,
@@ -2841,7 +2889,12 @@ async function bills() {
       }
       const d = debtorMap.get(sid);
       if (b.course_name) d.courses.add(b.course_name);
-      if (b.billing_period) d.periods.push(b.billing_period);
+      if (b.billing_period) {
+        d.raw_periods.push(b.billing_period);
+        segregatePeriod(b.billing_period).forEach(p => {
+          if (!d.periods.includes(p)) d.periods.push(p);
+        });
+      }
       d.total_due += bal;
       d.bill_ids.push(b.id);
       d.latest_bill_id = b.id;
@@ -2850,16 +2903,29 @@ async function bills() {
     }
   });
 
-  const studentSummaries = Array.from(debtorMap.values()).map(d => ({
-    ...d,
-    courses_display: Array.from(d.courses).sort().join(', ') || '—',
-    periods_display: Array.from(new Set(d.periods)).sort().join(', ') || '—',
-    unpaid_bills_count: d.bill_ids.length,
-  }));
+  const studentSummaries = Array.from(debtorMap.values()).map(d => {
+    const sortedPeriods = [...d.periods].sort();
+    const periodsDisplay = sortedPeriods.join(', ') || d.raw_periods.join(', ') || '—';
+    const unpaidMonthsCount = sortedPeriods.length || d.bill_ids.length;
+    return {
+      ...d,
+      courses_display: Array.from(d.courses).sort().join(', ') || '—',
+      periods_display: periodsDisplay,
+      unpaid_months_count: unpaidMonthsCount,
+      unpaid_bills_count: d.bill_ids.length,
+    };
+  });
 
-  studentSummaries.sort((a, b) => b.unpaid_bills_count - a.unpaid_bills_count || b.total_due - a.total_due || a.student_name.localeCompare(b.student_name));
+  studentSummaries.sort((a, b) => (
+    b.unpaid_months_count - a.unpaid_months_count ||
+    b.unpaid_bills_count - a.unpaid_bills_count ||
+    b.total_due - a.total_due ||
+    a.student_name.localeCompare(b.student_name)
+  ));
 
-  const multiOverdueStudents = new Set(studentSummaries.filter(s => s.unpaid_bills_count >= 2).map(s => s.student_id));
+  const multiOverdueStudents = new Set(
+    studentSummaries.filter(s => s.unpaid_months_count >= 2 || s.unpaid_bills_count >= 2).map(s => s.student_id)
+  );
   const overdueBillsCount = rows.filter(b => multiOverdueStudents.has(b.student_id) && Number(b.balance) > 0).length;
 
   // Filter Bar HTML
@@ -2907,7 +2973,7 @@ async function bills() {
   if (window._billViewMode === 'summary') {
     let summariesToShow = studentSummaries;
     if (window._billFilterStatus === 'overdue') {
-      summariesToShow = studentSummaries.filter(s => s.unpaid_bills_count >= 2);
+      summariesToShow = studentSummaries.filter(s => s.unpaid_months_count >= 2 || s.unpaid_bills_count >= 2);
     } else if (window._billFilterStatus === 'paid') {
       summariesToShow = [];
     }
@@ -2930,9 +2996,16 @@ async function bills() {
       },
       { key: 'courses_display', label: 'Enrolled Course(s)' },
       {
-        key: 'unpaid_bills_count',
+        key: 'unpaid_months_count',
         label: 'Unpaid Months',
-        render: row => `<span class="badge ${row.unpaid_bills_count >= 2 ? 'danger' : 'warning'}" style="font-weight:700;">${row.unpaid_bills_count} Month${row.unpaid_bills_count > 1 ? 's' : ''} (${row.bill_ids.length} bills)</span>`
+        render: row => {
+          const isDanger = (row.unpaid_months_count >= 2 || row.unpaid_bills_count >= 2);
+          const badgeClass = isDanger ? 'danger' : 'warning';
+          const text = row.unpaid_months_count !== row.unpaid_bills_count
+            ? `${row.unpaid_months_count} Month${row.unpaid_months_count > 1 ? 's' : ''} (${row.unpaid_bills_count} bills)`
+            : `${row.unpaid_months_count} Month${row.unpaid_months_count > 1 ? 's' : ''}`;
+          return `<span class="badge ${badgeClass}" style="font-weight:700;">${text}</span>`;
+        }
       },
       {
         key: 'periods_display',
@@ -3003,7 +3076,17 @@ async function bills() {
       { key: 'bill_number', label: 'Bill no.' },
       { key: 'student_name', label: 'Student' },
       { key: 'course_name', label: 'Course' },
-      { key: 'billing_period', label: 'Period' },
+      {
+        key: 'billing_period',
+        label: 'Period',
+        render: row => {
+          const seg = segregatePeriod(row.billing_period);
+          if (seg.length > 1) {
+            return `<div><b>${esc(row.billing_period)}</b><div style="font-size:11px;color:var(--muted);">${esc(seg.join(', '))}</div></div>`;
+          }
+          return esc(row.billing_period);
+        }
+      },
       { key: 'due_date', label: 'Due date' },
       { key: 'total_amount', label: 'Total', render: row => money(row.total_amount) },
       { key: 'paid_amount', label: 'Paid', render: row => money(row.paid_amount) },

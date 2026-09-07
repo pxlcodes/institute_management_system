@@ -2040,8 +2040,10 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
         for bill in services.billing.repository.list():
             if target_student_id and bill.student_id != target_student_id:
                 continue
-            if period and bill.billing_period != period:
-                continue
+            if period:
+                seg_p = services.billing.segregate_period(bill.billing_period)
+                if bill.billing_period != period and period not in seg_p:
+                    continue
             balance = float(bill.total_amount - bill.paid_amount)
             if status_filter in ("pending", "unpaid", "due") and balance <= 0:
                 continue

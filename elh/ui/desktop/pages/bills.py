@@ -176,7 +176,13 @@ class DueBillsPage(CrudPage):
         self.enrollment_combo["values"] = list(self.enrollment_map)
 
         self.all_bills = self.app.services.billing.repository.list()
-        periods = sorted({b.billing_period for b in self.all_bills if b.billing_period}, reverse=True)
+        all_periods = set()
+        for b in self.all_bills:
+            if b.billing_period:
+                all_periods.add(b.billing_period)
+                for p in self.app.services.billing.segregate_period(b.billing_period):
+                    all_periods.add(p)
+        periods = sorted(all_periods, reverse=True)
         self.period_combo["values"] = ["All Periods", *periods]
         self.apply_filters()
 
@@ -195,6 +201,13 @@ class DueBillsPage(CrudPage):
         total_credit_due = Decimal("0")
         for s in summaries:
             total_credit_due += Decimal(str(s["total_due"]))
+            months_count = s.get("unpaid_months_count", s["unpaid_bills_count"])
+            bills_count = s["unpaid_bills_count"]
+            months_text = (
+                f"{months_count} month(s)"
+                if months_count == bills_count
+                else f"{months_count} month(s) ({bills_count} bills)"
+            )
             self.student_tree.insert(
                 "",
                 "end",
@@ -203,7 +216,7 @@ class DueBillsPage(CrudPage):
                     s["student_name"],
                     s["contact"] or "—",
                     s["course_name"],
-                    f"{s['unpaid_bills_count']} month(s)",
+                    months_text,
                     s["periods_display"],
                     money(Decimal(str(s["total_due"]))),
                 ),
@@ -211,7 +224,10 @@ class DueBillsPage(CrudPage):
 
         # 2. Update Detailed Bills Tree
         self.clear_tree(self.tree)
-        multi_unpaid_students = {s["student_id"] for s in summaries if s["unpaid_bills_count"] >= 2}
+        multi_unpaid_students = {
+            s["student_id"] for s in summaries
+            if max(s.get("unpaid_months_count", s["unpaid_bills_count"]), s["unpaid_bills_count"]) >= 2
+        }
 
         filtered_bills = []
         for b in self.all_bills:
@@ -225,16 +241,21 @@ class DueBillsPage(CrudPage):
                 continue
 
             # Period filter
-            if period_choice != "All Periods" and b.billing_period != period_choice:
-                continue
+            if period_choice != "All Periods":
+                seg_list = self.app.services.billing.segregate_period(b.billing_period)
+                if b.billing_period != period_choice and period_choice not in seg_list:
+                    continue
 
             # Search filter
             if search_kw:
-                match_content = f"{b.bill_number} {b.student_name} {b.course_name} {getattr(b, 'contact', '')}".lower()
+                seg_str = " ".join(self.app.services.billing.segregate_period(b.billing_period))
+                match_content = f"{b.bill_number} {b.student_name} {b.course_name} {getattr(b, 'contact', '')} {b.billing_period} {seg_str}".lower()
                 if search_kw not in match_content:
                     continue
 
             filtered_bills.append(b)
+            seg = self.app.services.billing.segregate_period(b.billing_period)
+            period_val = f"{b.billing_period} ({', '.join(seg)})" if len(seg) > 1 else b.billing_period
             self.tree.insert(
                 "",
                 "end",
@@ -243,7 +264,7 @@ class DueBillsPage(CrudPage):
                     b.bill_number,
                     b.student_name,
                     b.course_name,
-                    b.billing_period,
+                    period_val,
                     b.issue_date,
                     b.due_date,
                     money(b.total_amount),

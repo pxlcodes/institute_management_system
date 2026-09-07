@@ -294,6 +294,91 @@ class BillArrearsAndStatementTests(unittest.TestCase):
         self.assertEqual(paid_bills[0]["id"], b3.id)
         self.assertEqual(paid_bills[0]["balance"], 0.0)
 
+    def test_period_segregation_and_combined_ranges(self):
+        # 1. Test segregate_period static method
+        self.assertEqual(
+            self.services.billing.segregate_period("2083/01 to 2083/03"),
+            ["2083/01", "2083/02", "2083/03"],
+        )
+        self.assertEqual(
+            self.services.billing.segregate_period("2083/01 - 2083/03"),
+            ["2083/01", "2083/02", "2083/03"],
+        )
+        self.assertEqual(
+            self.services.billing.segregate_period("2083/01 to 2083/03, 2083/04, 2083/05"),
+            ["2083/01", "2083/02", "2083/03", "2083/04", "2083/05"],
+        )
+        self.assertEqual(
+            self.services.billing.segregate_period("2082/11 to 2083/02"),
+            ["2082/11", "2082/12", "2083/01", "2083/02"],
+        )
+        self.assertEqual(
+            self.services.billing.segregate_period("2083/04"),
+            ["2083/04"],
+        )
+
+        # 2. Test segregate_periods class method with list of periods
+        self.assertEqual(
+            self.services.billing.segregate_periods(["2083/01 to 2083/03", "2083/04", "2083/05"]),
+            ["2083/01", "2083/02", "2083/03", "2083/04", "2083/05"],
+        )
+
+        # 3. Create a combined bill covering 2083/01 to 2083/03 plus separate bills 2083/04 and 2083/05
+        gen_combined = self.services.billing.generate_combined_month_range(
+            [self.enrollment_id], "2083/01", "2083/03", "2083/01/05", "2083/01/15"
+        )
+        self.assertEqual(len(gen_combined), 1)
+        comb_bill = gen_combined[0].bill
+        self.assertEqual(comb_bill.billing_period, "2083/01 to 2083/03")
+
+        bill4 = self.services.billing.generate(
+            self.enrollment_id, "2083/04", "2083/04/05", "2083/04/15"
+        ).bill
+        bill5 = self.services.billing.generate(
+            self.enrollment_id, "2083/05", "2083/05/05", "2083/05/15"
+        ).bill
+
+        # Test get_bill_arrears includes segregated months
+        arr5, tot5, grand5 = self.services.billing.get_bill_arrears(bill5)
+        self.assertEqual(len(arr5), 2)  # 2 older unpaid bills (comb_bill, bill4)
+        comb_arr = next(a for a in arr5 if a["bill_id"] == comb_bill.id)
+        self.assertEqual(comb_arr["months"], ["2083/01", "2083/02", "2083/03"])
+        self.assertEqual(comb_arr["months_display"], "2083/01, 2083/02, 2083/03")
+
+        # Test get_student_dues_summary reflects segregated periods
+        summaries = self.services.billing.get_student_dues_summary()
+        self.assertEqual(len(summaries), 1)
+        s = summaries[0]
+        self.assertEqual(s["unpaid_bills_count"], 3)
+        self.assertEqual(s["unpaid_months_count"], 5)
+        self.assertEqual(
+            s["periods"],
+            ["2083/01", "2083/02", "2083/03", "2083/04", "2083/05"],
+        )
+        self.assertEqual(
+            s["periods_display"],
+            "2083/01, 2083/02, 2083/03, 2083/04, 2083/05",
+        )
+        self.assertEqual(
+            s["raw_periods"],
+            ["2083/01 to 2083/03", "2083/04", "2083/05"],
+        )
+
+        # 4. Test Web API period filtering with a sub-month of a combined bill
+        status, _, body = asyncio.run(
+            _run_asgi_request(
+                self.app,
+                "GET",
+                "/api/bills?period=2083/02",
+                headers={"Authorization": f"Bearer {self.admin_token}"},
+            )
+        )
+        self.assertEqual(status, 200)
+        res_bills = json.loads(body.decode("utf-8"))
+        self.assertEqual(len(res_bills), 1)
+        self.assertEqual(res_bills[0]["id"], comb_bill.id)
+        self.assertEqual(res_bills[0]["billing_period"], "2083/01 to 2083/03")
+
 
 if __name__ == "__main__":
     unittest.main()
