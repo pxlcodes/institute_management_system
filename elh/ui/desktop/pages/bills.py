@@ -351,6 +351,134 @@ class DueBillsPage(CrudPage):
             raise ValueError("Select one or more bills first.")
         return [self.app.services.billing.repository.get(int(self.tree.item(item, "values")[0])) for item in selected]
 
+    def open_payment(self):
+        try:
+            bills = self.selected_bills()
+        except Exception:
+            try:
+                bills = [self.selected_bill()]
+            except Exception as exc:
+                self.show_error(exc)
+                return
+
+        if not bills:
+            self.show_error(ValueError("Select at least one bill to pay."))
+            return
+        self._launch_payment_dialog(bills)
+
+    def _launch_payment_dialog(self, bills):
+        student_names = {b.student_name for b in bills}
+        if len(student_names) > 1:
+            self.show_error(ValueError("All selected bills must belong to the same student for a combined payment.\nPlease select bills belonging to a single student."))
+            return
+
+        total_remaining = sum(max(Decimal("0"), b.total_amount - b.paid_amount) for b in bills)
+        if total_remaining <= 0:
+            self.show_error(ValueError("All selected bills are already fully paid."))
+            return
+
+        accounts = self.db.query("SELECT id,account_name,account_type FROM accounts WHERE status='Active' ORDER BY account_name")
+        account_map = {f"{r['account_name']} ({r['account_type']})": r["id"] for r in accounts}
+        if not account_map:
+            self.show_error(ValueError("Create an active payment account first."))
+            return
+
+        student_name = bills[0].student_name
+        is_multi = len(bills) > 1
+
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Combined Payment ({len(bills)} Bills)" if is_multi else "Quick Bill Payment")
+        dialog.transient(self.winfo_toplevel())
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        panel_title = f"{student_name} — {len(bills)} Bills Combined" if is_multi else f"{student_name} - {bills[0].bill_number}"
+        panel = ttk.LabelFrame(dialog, text=panel_title, padding=14)
+        panel.pack(fill="both", expand=True, padx=12, pady=12)
+
+        cur_row = 0
+        if is_multi:
+            bill_summary_lines = []
+            for b in bills:
+                b_rem = max(Decimal("0"), b.total_amount - b.paid_amount)
+                bill_summary_lines.append(f"• {b.bill_number} ({b.billing_period}): Due {money(b_rem)}")
+            ttk.Label(panel, text="\n".join(bill_summary_lines), justify="left").grid(row=cur_row, column=0, columnspan=2, sticky="w", pady=(0, 6))
+            cur_row += 1
+        else:
+            ttk.Label(panel, text=f"Course: {bills[0].course_name}    Period: {bills[0].billing_period}").grid(row=cur_row, column=0, columnspan=2, sticky="w", pady=(0, 8))
+            cur_row += 1
+
+        ttk.Label(panel, text=f"Total balance due: {money(total_remaining)}", style="Card.TLabel").grid(row=cur_row, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        cur_row += 1
+
+        ttk.Label(panel, text="💡 Payment automatically settles older bills first.\nAny extra amount is credited as student advance.", foreground="#0369A1", font=("Segoe UI", 8, "italic")).grid(row=cur_row, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        cur_row += 1
+
+        values = {
+            "amount": tk.StringVar(value=str(total_remaining)),
+            "discount": tk.StringVar(value="0"),
+            "date": tk.StringVar(value=today_iso()),
+            "account": tk.StringVar(value=next(iter(account_map))),
+            "method": tk.StringVar(value="Cash"),
+            "receipt": tk.StringVar(),
+            "remarks": tk.StringVar(),
+        }
+        fb = FormBuilder(panel, start_row=cur_row)
+        fb.entry("Payment Amount *", values["amount"])
+        fb.entry("Discount Amount", values["discount"])
+        fb.entry("Payment Date *", values["date"])
+        fb.combo("Payment Account *", values["account"], account_map)
+        fb.combo("Payment Method", values["method"], ["Cash", "Bank", "Wallet", "Other"])
+        fb.entry("Receipt No.", values["receipt"])
+        fb.entry("Remarks", values["remarks"])
+
+        def save_payment():
+            try:
+                amount = parse_amount(values["amount"].get() or "0", "Payment")
+                discount = parse_amount(values["discount"].get() or "0", "Discount")
+                pay_date = validate_date(values["date"].get(), "Payment date")
+                acc_id = account_map.get(values["account"].get())
+                method = values["method"].get()
+                receipt = values["receipt"].get().strip()
+                remarks = values["remarks"].get().strip()
+
+                result = self.app.services.billing.pay_bills(
+                    [b.id for b in bills],
+                    amount,
+                    pay_date,
+                    acc_id,
+                    method,
+                    receipt,
+                    remarks,
+                    discount,
+                    allow_advance=True,
+                )
+                dialog.destroy()
+                self.app.refresh_all()
+
+                settled_count = len(result.get("updated_bills", []))
+                adv = result.get("advance_amount", Decimal("0"))
+                adv_msg = f"\nAdvance credit recorded: {money(adv)} (Surplus)" if adv > 0 else ""
+                info_msg = (
+                    f"Payment: {money(amount)}\n"
+                    f"Discount: {money(discount)}\n"
+                    f"Bills settled / updated: {settled_count}{adv_msg}"
+                )
+
+                first_txn_id = result.get("transaction_ids", [None])[0]
+                wa_enabled = getattr(self.app.services, "settings", None) and self.app.services.settings.get_bool("whatsapp_enabled", False)
+                if wa_enabled:
+                    ans = messagebox.askyesno("Payment Saved", f"{info_msg}\n\nWould you like to send a payment receipt via WhatsApp?", parent=self)
+                    if ans and first_txn_id:
+                        self.send_whatsapp_payment_receipt(first_txn_id)
+                else:
+                    sms_note = "\n\nAutomated SMS receipt has been queued." if getattr(self.app.services, "settings", None) and self.app.services.settings.get_bool("sms_enabled", False) else ""
+                    messagebox.showinfo("Payment Saved", f"{info_msg}{sms_note}", parent=self)
+            except Exception as exc:
+                messagebox.showerror("Payment Error", str(exc), parent=dialog)
+
+        ttk.Button(panel, text="Receive Payment", style="Accent.TButton", command=save_payment).grid(row=fb.row, column=1, sticky="e", pady=(12, 0))
+
     def create_pdf(self):
         try:
             path=self.app.services.billing.create_pdf(self.selected_bill());os.startfile(path)
