@@ -52,7 +52,7 @@ class TeachersPage(CrudPage):
         fb.entry("Address", self.vars["address"])
         fb.entry("Email", self.vars["email"])
         fb.entry("Qualification", self.vars["qualification"])
-        fb.entry("Subject", self.vars["subject"])
+        self.subject_combo = fb.combo("Subject", self.vars["subject"], [], searchable=True)
         fb.entry("Joined Date *", self.vars["joined"])
         fb.combo(
             "Salary Type", self.vars["salary_type"],
@@ -304,6 +304,8 @@ class TeachersPage(CrudPage):
     def refresh(self):
         self.attendance_user_map, _current = attendance_user_choices(self.app, "teacher")
         self.attendance_combo["values"] = list(self.attendance_user_map)
+        subjects = self.db.query("SELECT subject_name FROM subjects WHERE status='Active' ORDER BY subject_name")
+        self.subject_combo["values"] = [s["subject_name"] for s in subjects]
         self.clear_tree(self.tree)
         rows = self.db.query("""
             SELECT t.*,m.device_user_id,u.device_name

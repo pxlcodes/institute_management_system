@@ -4,7 +4,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Iterable
 from elh.config import ROOT_DIR
-from elh.core.validation import validate_month
+from elh.core.validation import today_iso, validate_month
 
 from elh.models import BillGenerationResult, Receipt, ReceiptLine
 from elh.repositories import BillingRepository
@@ -13,20 +13,177 @@ from elh.repositories import BillingRepository
 class BillingService:
     def __init__(self,repository:BillingRepository,printing,app_title:str,currency_symbol:str,notifications=None,settings=None):
         self.repository=repository;self.printing=printing;self.app_title=app_title;self.currency_symbol=currency_symbol;self.notifications=notifications;self.settings=settings
+
+    def get_company_profile(self) -> dict:
+        """Fetch institute profile details (name, address, phone, PAN, footer) for bills."""
+        try:
+            row = self.repository.db.query_one("SELECT * FROM company_profile WHERE id=1")
+            if row:
+                return dict(row)
+        except Exception:
+            pass
+        return {
+            "company_name": getattr(self, "app_title", "Expert Learning Hub"),
+            "pan_number": "",
+            "registration_number": "",
+            "address": "",
+            "phone": "",
+            "email": "",
+            "website": "",
+            "principal_name": "",
+            "report_footer": "Your Reliable Learning Partner",
+        }
+
+    def update_bill(
+        self,
+        bill_id: int,
+        billing_period: str,
+        issue_date: str,
+        due_date: str,
+        subtotal: Decimal,
+        discount: Decimal,
+        remarks: str = "",
+    ) -> DueBill:
+        """Update billing dates, amounts, and remarks on an existing due bill."""
+        return self.repository.update_bill(
+            bill_id=bill_id,
+            billing_period=billing_period,
+            issue_date=issue_date,
+            due_date=due_date,
+            subtotal=subtotal,
+            discount=discount,
+            remarks=remarks,
+        )
+
+    def calculate_first_month_proration(
+        self,
+        start_date: str,
+        monthly_fee: Decimal,
+        period: str,
+    ) -> tuple[Decimal, str]:
+        """Calculates first month fee based on start date and configured cutoffs (Model C).
+        Returns (prorated_fee, partial_note).
+        """
+        if not start_date or not period or monthly_fee <= Decimal("0"):
+            return monthly_fee, ""
+
+        clean = str(start_date).replace("-", "/").strip()
+        parts = clean.split("/")
+        if len(parts) < 3:
+            return monthly_fee, ""
+
+        try:
+            y = int(parts[0])
+            m = int(parts[1])
+            d = int(parts[2])
+        except (ValueError, IndexError):
+            return monthly_fee, ""
+
+        enrollment_month = f"{y:04d}/{m:02d}"
+        if period != enrollment_month:
+            return monthly_fee, ""
+
+        settings = getattr(self, "settings", None)
+        end_cutoff = settings.get_int("billing_partial_end_cutoff_days", 5) if settings else 5
+        start_cutoff = settings.get_int("billing_partial_start_cutoff_days", 4) if settings else 4
+        round_to = settings.get_int("billing_partial_round_to", 50) if settings else 50
+        base_days = settings.get_int("billing_partial_base_days", 30) if settings else 30
+        total_days = base_days if base_days > 0 else 30
+
+        cal_days = total_days
+        try:
+            import nepali_datetime as nepali
+            cal_days = nepali._days_in_month(y, m)
+        except Exception:
+            pass
+
+        cal_remaining_days = cal_days - d + 1
+
+        # Zone 3: End grace cutoff (e.g. joined on or near month-end)
+        if cal_remaining_days <= end_cutoff or (total_days - d + 1) <= end_cutoff:
+            return Decimal("0"), f"Waived (joined on {start_date}, within {end_cutoff}-day month-end grace)"
+
+        # Zone 1: Start cutoff (e.g. joined on or before day 4)
+        if d <= start_cutoff:
+            return monthly_fee, ""
+
+        # Zone 2: Mid-month joining -> calculate pro-rata based on 30 standard days
+        remaining_days = max(1, min(total_days, total_days - d + 1))
+        daily_rate = monthly_fee / Decimal(total_days)
+        raw_amount = daily_rate * Decimal(remaining_days)
+
+        if round_to > 0:
+            prorated_amount = Decimal(round(float(raw_amount) / round_to) * round_to)
+        else:
+            prorated_amount = raw_amount.quantize(Decimal("0.01"))
+
+        prorated_amount = min(monthly_fee, max(Decimal("0"), prorated_amount))
+        note = f"Partial month fee ({remaining_days}/{total_days} days, joined {start_date})"
+        return prorated_amount, note
+
+    @staticmethod
+    def get_effective_billing_start_month(start_date: str, grace_days: int = 5) -> str:
+        """Calculate the first month to be billed for an enrollment.
+        If the student enrolls within the last `grace_days` of the month (e.g. 28, 29, 30),
+        grace is given for those few remaining days and the first bill starts from next month.
+        """
+        if not start_date:
+            return ""
+        clean = str(start_date).replace("-", "/").strip()
+        if not clean or clean.lower() == "none":
+            return ""
+        parts = clean.split("/")
+        if len(parts) < 2:
+            return clean[:7]
+        try:
+            y = int(parts[0])
+            m = int(parts[1])
+            d = int(parts[2]) if len(parts) >= 3 else 1
+        except (ValueError, IndexError):
+            return clean[:7]
+
+        total_days = 30
+        try:
+            import nepali_datetime as nepali
+            total_days = nepali._days_in_month(y, m)
+        except Exception:
+            pass
+
+        if (total_days - d + 1) <= grace_days:
+            m += 1
+            if m > 12:
+                y += 1
+                m = 1
+            return f"{y:04d}/{m:02d}"
+        return f"{y:04d}/{m:02d}"
+
     def generate(self,enrollment_id:int,period:str,issue_date:str,due_date:str,remarks:str="") -> BillGenerationResult:
         period=validate_month(period.strip(),"Billing period")
         enrollment=self.repository.enrollment(enrollment_id)
         if not enrollment:raise ValueError("Enrollment was not found.")
-        start_month=str(enrollment["start_date"])[:7]
-        if period<start_month:raise ValueError(f"Cannot bill {period}; enrollment starts in {start_month}.")
+        raw_start = ""
+        try:
+            raw_start = str(enrollment["start_date"] or "").strip()
+        except (KeyError, IndexError, TypeError):
+            raw_start = ""
+        if raw_start.lower() == "none":
+            raw_start = ""
+        start_month=self.get_effective_billing_start_month(raw_start) if raw_start else ""
+        if start_month and period<start_month:raise ValueError(f"Cannot bill {period}; enrollment starts in {start_month} (effective start with end-of-month grace).")
         existing=self.repository.find(enrollment_id,period)
         if existing:return BillGenerationResult(existing,False)
         first=self.repository.count_for_enrollment(enrollment_id)==0
-        fee=Decimal(str(enrollment["monthly_fee"] or 0));admission=Decimal(str(enrollment["admission_fee"] or 0)) if first else Decimal("0")
+        fee=Decimal(str(enrollment["monthly_fee"] or 0))
+        partial_note = ""
+        if first and raw_start:
+            fee, partial_note = self.calculate_first_month_proration(raw_start, fee, period)
+        admission=Decimal(str(enrollment["admission_fee"] or 0)) if first else Decimal("0")
         discount=Decimal(str(enrollment["discount"] or 0)) if first else Decimal("0")
         subtotal=fee+admission;total=max(Decimal("0"),subtotal-discount)
-        bill_number=f"ELH-{enrollment_id}-{period.replace('/','-').replace(' ','-')}"
-        bill_id=self.repository.create((bill_number,enrollment_id,period,issue_date,due_date,subtotal,discount,total,remarks))
+        final_remarks = f"{remarks} ({partial_note})".strip(" ()") if (partial_note and remarks) else (partial_note or remarks)
+        m_slug = period.replace('/','-').replace(' ','-')
+        bill_number=f"ELH-{enrollment_id}-{m_slug}-{m_slug}"
+        bill_id=self.repository.create((bill_number,enrollment_id,period,issue_date,due_date,subtotal,discount,total,final_remarks))
         bill=self.repository.get(bill_id);self._notify_bill(bill)
         return BillGenerationResult(bill,True)
     def generate_many(self,enrollment_ids:list[int],period:str,issue_date:str,due_date:str,remarks:str=""):
@@ -45,8 +202,20 @@ class BillingService:
             periods.append(f"{year:04d}/{month:02d}");month+=1
             if month==13:year+=1;month=1
         results=[]
+        repo = getattr(self, "repository", None)
         for enrollment_id in enrollment_ids:
-            for period in periods:results.append(self.generate(enrollment_id,period,issue_date,due_date,remarks))
+            enrollment = repo.enrollment(enrollment_id) if repo else None
+            raw_start = ""
+            if enrollment:
+                try:
+                    raw_start = str(enrollment["start_date"] or "").strip()
+                except (KeyError, IndexError, TypeError):
+                    raw_start = ""
+            eff_start = self.get_effective_billing_start_month(raw_start) if raw_start else ""
+            for period in periods:
+                if eff_start and period < eff_start:
+                    continue
+                results.append(self.generate(enrollment_id,period,issue_date,due_date,remarks))
         return results
     def generate_combined_month_range(self,enrollment_ids:list[int],start_month:str,end_month:str,issue_date:str,due_date:str,remarks:str=""):
         if not enrollment_ids:
@@ -65,8 +234,13 @@ class BillingService:
 
         for enrollment_id in enrollment_ids:
             enrollment = enrollments[enrollment_id]
-            enrollment_start = str(enrollment["start_date"])[:7]
-            eligible_months = [month for month in months if month >= enrollment_start]
+            raw_start = ""
+            try:
+                raw_start = str(enrollment["start_date"] or "").strip()
+            except (KeyError, IndexError, TypeError):
+                raw_start = ""
+            enrollment_start = self.get_effective_billing_start_month(raw_start) if raw_start else ""
+            eligible_months = [month for month in months if (not enrollment_start or month >= enrollment_start)]
             if not eligible_months:
                 result_slots.append(None)
                 continue
@@ -232,9 +406,37 @@ class BillingService:
         output=output or ROOT_DIR/"output"/"pdf"/f"due_bill_{safe_bill_number}.pdf"
         output.parent.mkdir(parents=True,exist_ok=True)
         styles=getSampleStyleSheet();doc=SimpleDocTemplate(str(output),pagesize=A4,rightMargin=18*mm,leftMargin=18*mm,topMargin=16*mm,bottomMargin=16*mm)
-        story=[Paragraph(self.app_title,styles["Title"]),Paragraph("STUDENT DUE BILL",styles["Heading2"]),Spacer(1,6*mm)]
-        details=[["Bill Number",bill.bill_number,"Billing Period",bill.billing_period],["Student",bill.student_name,"Course",bill.course_name],["Issue Date",bill.issue_date,"Due Date",bill.due_date],["Status",bill.status,"",""]]
-        table=Table(details,colWidths=[30*mm,58*mm,30*mm,55*mm]);table.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.5,colors.grey),("BACKGROUND",(0,0),(0,-1),colors.HexColor("#EAF0F6")),("BACKGROUND",(2,0),(2,-1),colors.HexColor("#EAF0F6")),("VALIGN",(0,0),(-1,-1),"MIDDLE"),("PADDING",(0,0),(-1,-1),6)]));story.extend([table,Spacer(1,7*mm)])
+        profile = self.get_company_profile()
+        company_name = profile.get("company_name") or self.app_title
+        sub_parts = [v for v in (profile.get("address"), f"Phone: {profile['phone']}" if profile.get("phone") else "", f"PAN: {profile['pan_number']}" if profile.get("pan_number") else "") if v]
+        sub_line = "  |  ".join(sub_parts)
+        header_sub_style = ParagraphStyle("HeaderSub", parent=styles["Normal"], fontSize=9, leading=12, alignment=1, textColor=colors.HexColor("#475569"))
+        story = [Paragraph(company_name, styles["Title"])]
+        if sub_line:
+            story.append(Paragraph(sub_line, header_sub_style))
+        story.extend([Spacer(1, 2 * mm), Paragraph("STUDENT DUE BILL", styles["Heading2"]), Spacer(1, 4 * mm)])
+
+        contact_display = getattr(bill, "contact", "") or "—"
+        class_display = getattr(bill, "class_name", "") or "—"
+        remarks_display = getattr(bill, "remarks", "") or "—"
+
+        details = [
+            ["Bill Number", bill.bill_number, "Billing Period", bill.billing_period],
+            ["Student Name", bill.student_name, "Contact / Phone", contact_display],
+            ["Class / Grade", class_display, "Course", bill.course_name],
+            ["Issue Date", bill.issue_date, "Due Date", bill.due_date],
+            ["Status", bill.status, "Remarks", remarks_display],
+        ]
+        table = Table(details, colWidths=[28 * mm, 60 * mm, 30 * mm, 56 * mm])
+        table.setStyle(TableStyle([
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#EAF0F6")),
+            ("BACKGROUND", (2, 0), (2, -1), colors.HexColor("#EAF0F6")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("PADDING", (0, 0), (-1, -1), 5),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ]))
+        story.extend([table, Spacer(1, 6 * mm)])
 
         arrears, total_arrears, grand_total = self.get_bill_arrears(bill)
         payable_amount = grand_total if arrears else bill.total_amount
@@ -304,13 +506,22 @@ class BillingService:
                 ("BACKGROUND", (1, 0), (1, 0), colors.HexColor("#F8FAFC")),
                 ("PADDING", (1, 0), (1, 0), 5),
             ]))
-            story.extend([combo_table, Spacer(1, 12 * mm)])
+            story.extend([combo_table, Spacer(1, 10 * mm)])
         else:
             amounts=Table(amount_rows,colWidths=[125*mm,48*mm])
             amounts.setStyle(TableStyle(amounts_style))
-            story.extend([amounts,Spacer(1,14*mm)])
+            story.extend([amounts,Spacer(1,12*mm)])
 
-        story.extend([Paragraph("Please pay by the due date. Keep this bill for your records.",styles["BodyText"]),Spacer(1,12*mm),Paragraph("Authorized Signature: ______________________________",styles["BodyText"])]);doc.build(story)
+        report_footer = profile.get("report_footer") or "Your Reliable Learning Partner"
+        footer_style = ParagraphStyle("FooterNote", parent=styles["Normal"], fontSize=8, leading=10, alignment=1, textColor=colors.HexColor("#64748B"))
+        story.extend([
+            Paragraph(f"<i>{report_footer}</i>", footer_style),
+            Spacer(1, 2 * mm),
+            Paragraph("Please pay by the due date. Keep this bill for your records.", styles["BodyText"]),
+            Spacer(1, 10 * mm),
+            Paragraph("Authorized Signature: ______________________________", styles["BodyText"]),
+        ])
+        doc.build(story)
         self.repository.set_pdf(bill.id,str(output));return output
 
     def create_batch_pdf(self,bills:list,output:Path|None=None)->Path:
@@ -334,7 +545,7 @@ class BillingService:
             if index and index%2==0:story.append(PageBreak())
             elif index:story.extend([Spacer(1,6*mm),HRFlowable(width="90%",thickness=1.2,color=colors.HexColor("#667788"),hAlign="CENTER"),Spacer(1,6*mm)])
             bill_story=[Paragraph(self.app_title,compact_title),Paragraph("STUDENT DUE BILL",compact_heading),Spacer(1,3*mm)]
-            details=[["Bill Number",bill.bill_number,"Billing Period",bill.billing_period],["Student",bill.student_name,"Course",bill.course_name],["Issue Date",bill.issue_date,"Due Date",bill.due_date],["Status",bill.status,"",""]]
+            details=[["Bill Number",bill.bill_number,"Billing Period",bill.billing_period],["Student",bill.student_name,"Course",bill.course_name],["Class / Grade",getattr(bill,"class_name","") or "—","Status",bill.status],["Issue Date",bill.issue_date,"Due Date",bill.due_date]]
             info=Table(details,colWidths=[27*mm,61*mm,27*mm,58*mm],hAlign="CENTER");info.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.5,colors.grey),("BACKGROUND",(0,0),(0,-1),colors.HexColor("#EAF0F6")),("BACKGROUND",(2,0),(2,-1),colors.HexColor("#EAF0F6")),("VALIGN",(0,0),(-1,-1),"MIDDLE"),("FONTSIZE",(0,0),(-1,-1),9),("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5)]));bill_story.extend([info,Spacer(1,4*mm)])
 
             arrears, total_arrears, grand_total = self.get_bill_arrears(bill)
@@ -412,12 +623,15 @@ class BillingService:
         for bill in bills:self.print_pos(bill)
     def print_pos(self,bill):
         from elh.core.payment_qr import PaymentQrEngine
+        profile = self.get_company_profile()
         arrears, total_arrears, grand_total = self.get_bill_arrears(bill)
         payable_amount = grand_total if arrears else bill.total_amount
 
         lines=[ReceiptLine(f"{bill.course_name} ({bill.billing_period})",bill.subtotal)]
         if bill.discount>0:lines.append(ReceiptLine("Discount",-bill.discount))
+        if bill.paid_amount>0:lines.append(ReceiptLine("Less: Paid Amount",-bill.paid_amount))
         if arrears:
+            lines.append(ReceiptLine("--- Old Dues / Arrears ---", Decimal("0")))
             for arr in arrears:
                 lines.append(ReceiptLine(f"Arrears ({arr['billing_period']})", arr["balance"]))
 
@@ -432,10 +646,145 @@ class BillingService:
         qr_caption = f"Scan to Pay Grand Total ({qr_data.provider})" if (qr_data and arrears) else (f"Scan to Pay ({qr_data.provider})" if qr_data else "")
 
         receipt=Receipt(
-            "ELH DUE BILL",bill.bill_number,bill.issue_date,bill.student_name,lines,f"DUE BY: {bill.due_date}",
-            qr_payload=qr_payload,qr_caption=qr_caption,
+            title="DUE BILL",
+            receipt_number=bill.bill_number,
+            issued_at=bill.issue_date,
+            customer_name=bill.student_name,
+            lines=lines,
+            footer=f"DUE BY: {bill.due_date}",
+            qr_payload=qr_payload,
+            qr_caption=qr_caption,
+            class_name=getattr(bill, "class_name", "") or "",
+            contact=getattr(bill, "contact", "") or "",
+            org_name=profile.get("company_name") or "",
+            org_address=profile.get("address") or "",
+            org_phone=profile.get("phone") or "",
+            org_pan=profile.get("pan_number") or "",
+            footer_note=profile.get("report_footer") or "",
         )
         self.printing.print_receipt(receipt);self.repository.mark_pos_printed(bill.id)
+
+    def print_pos_student_statement(self, student_id: int) -> Receipt:
+        bills = self.repository.get_unpaid_bills_for_student(student_id)
+        if not bills:
+            raise ValueError(f"No unpaid bills found for student #{student_id}.")
+
+        bills = sorted(bills, key=lambda b: (b.issue_date, b.id))
+        student_name = bills[0].student_name
+        student_class = getattr(bills[0], "class_name", "") or ""
+        student_contact = getattr(bills[0], "contact", "") or ""
+        courses = list(dict.fromkeys(b.course_name for b in bills))
+        courses_str = ", ".join(courses)
+
+        lines = []
+        total_due = Decimal("0")
+        for b in bills:
+            bal = max(Decimal("0"), b.total_amount - b.paid_amount)
+            total_due += bal
+            seg = self.segregate_period(b.billing_period)
+            p_text = b.billing_period if len(seg) <= 1 else f"{b.billing_period} ({', '.join(seg)})"
+            lines.append(ReceiptLine(f"{b.course_name} [{p_text}]", bal))
+
+        from elh.core.payment_qr import PaymentQrEngine
+        qr_data = PaymentQrEngine.from_settings(
+            getattr(self, "settings", None),
+            total_due,
+            f"STMT-{student_id}",
+            student_name,
+            courses_str,
+        )
+        qr_payload = PaymentQrEngine.build_payload(qr_data) if (qr_data and total_due > 0) else ""
+        qr_caption = f"Scan to Pay Grand Total ({qr_data.provider})" if qr_data else ""
+
+        all_months = self.segregate_periods([b.billing_period for b in bills if b.billing_period])
+        months_label = f"{len(all_months)} month(s) ({len(bills)} bills)" if len(all_months) != len(bills) else f"{len(bills)} bill(s)"
+        footer = f"Pending: {months_label} | Settle promptly"
+
+        profile = self.get_company_profile()
+        receipt = Receipt(
+            title="STUDENT CREDIT STATEMENT",
+            receipt_number=f"STMT-{student_id}",
+            issued_at=today_iso(),
+            customer_name=student_name,
+            class_name=student_class,
+            contact=student_contact,
+            lines=lines,
+            footer=footer,
+            show_amounts=True,
+            qr_payload=qr_payload,
+            qr_caption=qr_caption,
+            org_name=profile.get("company_name") or "",
+            org_address=profile.get("address") or "",
+            org_phone=profile.get("phone") or "",
+            org_pan=profile.get("pan_number") or "",
+            footer_note=profile.get("report_footer") or "",
+        )
+        self.printing.print_receipt(receipt)
+        for b in bills:
+            self.repository.mark_pos_printed(b.id)
+        return receipt
+
+    def print_pos_student_statements(self, student_ids: list[int]) -> int:
+        if not student_ids:
+            raise ValueError("Select at least one student.")
+        count = 0
+        for sid in student_ids:
+            self.print_pos_student_statement(sid)
+            count += 1
+        return count
+
+    def print_pos_student_bills(self, student_ids: list[int]) -> int:
+        if not student_ids:
+            raise ValueError("Select at least one student.")
+        all_bills = []
+        for sid in student_ids:
+            bills = self.repository.get_unpaid_bills_for_student(sid)
+            all_bills.extend(bills)
+        if not all_bills:
+            raise ValueError("No unpaid bills found for selected student(s).")
+        self.print_pos_many(all_bills)
+        return len(all_bills)
+
+    def get_unpaid_bills_by_class(self, class_name: str = "") -> list[DueBill]:
+        """Fetch all unpaid due bills, optionally filtered by student class_name."""
+        all_bills = self.repository.list()
+        unpaid = [b for b in all_bills if (b.total_amount - b.paid_amount) > Decimal("0")]
+        if not class_name or class_name.strip().lower() in ("all", "all classes"):
+            return unpaid
+        c_clean = class_name.strip().lower()
+        return [b for b in unpaid if (getattr(b, "class_name", "") or "").strip().lower() == c_clean]
+
+    def print_pos_by_class(self, class_name: str = "", mode: str = "bills") -> dict:
+        """Print POS receipts for all unpaid dues in a given class.
+        mode='bills' prints individual bill slips for each unpaid bill.
+        mode='statement' prints 1 consolidated credit statement per student in that class.
+        """
+        unpaid_bills = self.get_unpaid_bills_by_class(class_name)
+        class_label = class_name if class_name and class_name.strip().lower() not in ("all", "all classes") else "All Classes"
+        if not unpaid_bills:
+            raise ValueError(f"No unpaid dues found for class '{class_label}'.")
+        student_ids = list(dict.fromkeys(b.student_id for b in unpaid_bills))
+        mode_clean = (mode or "bills").strip().lower()
+        if mode_clean in ("statement", "statements"):
+            printed_count = self.print_pos_student_statements(student_ids)
+            return {
+                "ok": True,
+                "class_name": class_label,
+                "mode": "statement",
+                "printed_count": printed_count,
+                "student_count": len(student_ids),
+                "total_bills": len(unpaid_bills),
+            }
+        else:
+            self.print_pos_many(unpaid_bills)
+            return {
+                "ok": True,
+                "class_name": class_label,
+                "mode": "bills",
+                "printed_count": len(unpaid_bills),
+                "student_count": len(student_ids),
+                "total_bills": len(unpaid_bills),
+            }
 
     def create_consolidated_statement_pdf(
         self,
@@ -520,10 +869,12 @@ class BillingService:
         all_months = self.segregate_periods([b.billing_period for b in bills if b.billing_period])
         months_label = f"{len(all_months)} month(s) ({len(bills)} bill(s))" if len(all_months) != len(bills) else f"{len(bills)} bill(s)"
 
+        student_class = getattr(bills[0], "class_name", "") or "—"
         meta_data = [
             ["Student Name", student_name, "Student ID", f"#{target_student_id}"],
-            ["Course(s)", courses_str, "Unpaid Months", months_label],
-            ["Statement Date", bills[-1].issue_date, "Total Dues", f"{self.currency_symbol} {total_outstanding:,.2f}"],
+            ["Class / Grade", student_class, "Course(s)", courses_str],
+            ["Statement Date", bills[-1].issue_date, "Unpaid Months", months_label],
+            ["Total Outstanding", f"{self.currency_symbol} {total_outstanding:,.2f}", "Status", "PENDING PAYMENT"],
         ]
         meta_table = Table(meta_data, colWidths=[32 * mm, 60 * mm, 32 * mm, 54 * mm])
         meta_table.setStyle(TableStyle([
@@ -626,6 +977,31 @@ class BillingService:
 
         doc.build(story)
         return output
+
+    def pay_bill(
+        self,
+        bill_id: int,
+        amount: Decimal,
+        payment_date: str,
+        account_id: int | None,
+        method: str = "Cash",
+        receipt_no: str = "",
+        remarks: str = "",
+        discount: Decimal = Decimal("0"),
+    ) -> dict:
+        result = self.pay_bills(
+            bill_ids=[bill_id],
+            amount=amount,
+            payment_date=payment_date,
+            account_id=account_id,
+            method=method,
+            receipt_no=receipt_no,
+            remarks=remarks,
+            discount=discount,
+        )
+        txns = result.get("transaction_ids") or []
+        return {"transaction_id": txns[0] if txns else None, **result}
+
     def pay_bills(
         self,
         bill_ids: list[int],
@@ -637,6 +1013,7 @@ class BillingService:
         remarks: str = "",
         discount: Decimal = Decimal("0"),
         allow_advance: bool = True,
+        enforce_fifo: bool = True,
     ) -> dict:
         amount = Decimal(str(amount))
         discount = Decimal(str(discount))
@@ -651,6 +1028,7 @@ class BillingService:
                 receipt_no,
                 remarks,
                 allow_advance=allow_advance,
+                enforce_fifo=enforce_fifo,
             )
         else:
             tid = self.repository.record_payment(
@@ -873,7 +1251,7 @@ class BillingService:
             (int(bill_id), student_id, status, note.strip(), follow_up_date.strip() or None, user_id),
         )
 
-    def get_student_dues_summary(self, min_unpaid_months: int = 1, search: str = "") -> list[dict]:
+    def get_student_dues_summary(self, min_unpaid_months: int = 1, search: str = "", class_name: str = "") -> list[dict]:
         """Group unpaid bills by student to give an immediate credit/defaulters summary."""
         all_bills = self.repository.list()
         grouped: dict[int, dict] = {}
@@ -886,6 +1264,7 @@ class BillingService:
                 grouped[sid] = {
                     "student_id": sid,
                     "student_name": b.student_name,
+                    "class_name": getattr(b, "class_name", "") or "",
                     "contact": b.contact,
                     "courses": set(),
                     "periods": [],
@@ -908,7 +1287,13 @@ class BillingService:
 
         results = []
         search_lower = (search or "").strip().lower()
+        class_filter = (class_name or "").strip().lower()
         for sid, data in grouped.items():
+            if class_filter and class_filter not in ("all", "all classes"):
+                s_class = (data.get("class_name") or "").strip().lower()
+                if s_class != class_filter:
+                    continue
+
             unpaid_count = len(data["bills"])
             raw_periods = sorted(
                 dict.fromkeys(data["periods"]),
@@ -923,13 +1308,14 @@ class BillingService:
 
             courses_str = ", ".join(sorted(data["courses"]))
             if search_lower:
-                match_text = f"{data['student_name']} {data['contact']} {courses_str} {periods_str} {' '.join(raw_periods)}".lower()
+                match_text = f"{data['student_name']} {data['contact']} {courses_str} {periods_str} {' '.join(raw_periods)} {data.get('class_name', '')}".lower()
                 if search_lower not in match_text:
                     continue
 
             results.append({
                 "student_id": sid,
                 "student_name": data["student_name"],
+                "class_name": data.get("class_name", ""),
                 "contact": data["contact"],
                 "course_name": courses_str,
                 "courses": sorted(data["courses"]),
@@ -947,3 +1333,61 @@ class BillingService:
 
         results.sort(key=lambda x: (-x["unpaid_months_count"], -x["unpaid_bills_count"], -x["total_due"], x["student_name"].lower()))
         return results
+
+    def reconcile_student_billing_fifo(self, student_id: int | None = None) -> dict:
+        """Reconcile due bills for a student (or all students) so that payments strictly follow
+        chronological FIFO order (earliest unpaid months get settled first).
+        Fixes situations where a later month (e.g. Month 05) was marked Paid while an earlier month (e.g. Month 04) was Due.
+        """
+        if hasattr(self.repository, "reconcile_billing_fifo"):
+            return self.repository.reconcile_billing_fifo(student_id)
+        return {"reconciled_students": 0, "adjusted_bills": 0, "details": []}
+
+    def delete_payment(
+        self,
+        transaction_id: int,
+        actor_user_id: int | None = None,
+        actor_username: str = "admin",
+        actor_role: str = "admin",
+    ) -> dict:
+        """Delete a student payment record. Strictly restricted to administrator access."""
+        if actor_role not in ("super_admin", "admin"):
+            raise PermissionError("Access Denied: Only administrators are authorized to delete payment records.")
+        return self.repository.delete_payment(
+            transaction_id=transaction_id,
+            actor_username=actor_username,
+            actor_user_id=actor_user_id,
+        )
+
+    def get_payments_for_bill(self, bill_id: int) -> list[dict]:
+        return self.repository.get_payments_for_bill(bill_id)
+
+    def list_payment_records(self, search: str = "", period: str = "", limit: int = 500) -> list[dict]:
+        return self.repository.list_payment_records(search=search, period=period, limit=limit)
+
+    def get(self, bill_id: int):
+        return self.repository.get(bill_id)
+
+    def delete_bill(
+        self,
+        bill_id: int,
+        actor_user_id: int | None = None,
+        actor_username: str = "admin",
+        actor_role: str = "admin",
+        force_paid: bool = True,
+    ) -> dict:
+        """Delete a due bill. If bill has recorded payments, strictly restricted to administrator access."""
+        bill = self.repository.get(bill_id)
+        if not bill:
+            raise ValueError(f"Bill #{bill_id} was not found.")
+        if bill.paid_amount > Decimal("0") and actor_role not in ("super_admin", "admin"):
+            raise PermissionError("Access Denied: Only administrators are authorized to delete bills with recorded payments.")
+
+        return self.repository.delete_bill(
+            bill_id=bill_id,
+            actor_username=actor_username,
+            actor_user_id=actor_user_id,
+            force_paid=force_paid,
+        )
+
+

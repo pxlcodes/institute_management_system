@@ -271,6 +271,18 @@ class StudentService:
         )
         recent_sms = [dict(r) for r in sms_rows]
 
+        # 8. Assigned Subjects & Electives
+        subject_rows = db.query(
+            "SELECT ss.id, ss.student_id, ss.subject_id, ss.enrollment_type, ss.assigned_date, ss.status, ss.remarks, "
+            "s.subject_name, s.subject_code, s.subject_type "
+            "FROM student_subjects ss "
+            "JOIN subjects s ON s.id = ss.subject_id "
+            "WHERE ss.student_id = ? "
+            "ORDER BY CASE ss.enrollment_type WHEN 'Compulsory' THEN 1 WHEN 'Optional' THEN 2 WHEN 'Elective' THEN 3 ELSE 4 END, s.subject_name",
+            (student_id,),
+        )
+        assigned_subjects = [dict(r) for r in subject_rows]
+
         return {
             "student": student_data,
             "active_enrollments": active_enrollments,
@@ -295,4 +307,5 @@ class StudentService:
             },
             "certificates": certificates,
             "recent_sms": recent_sms,
+            "subjects": assigned_subjects,
         }

@@ -25,6 +25,7 @@ class PaymentQrData:
     bill_number: str = ""
     student_name: str = ""
     purpose: str = "Institute Tuition Fee"
+    remarks: str = ""
     instructions: str = "Scan to Pay via Fonepay / eSewa / Mobile Banking"
     image_path: str = ""
     qr_payload: str = ""
@@ -71,6 +72,7 @@ class PaymentQrEngine:
         bill_number: str = "",
         student_name: str = "",
         purpose: str = "",
+        remarks: str = "",
     ) -> str:
         """Construct scannable dynamic EMVCo payload from a base merchant QR code string."""
         tlv = cls.parse_emvco_tlv(base_emvco)
@@ -81,6 +83,7 @@ class PaymentQrEngine:
         bill_no = "".join(ch for ch in str(bill_number or "") if 32 <= ord(ch) <= 126).strip()
         student = "".join(ch for ch in str(student_name or "") if 32 <= ord(ch) <= 126).strip()
         purp = "".join(ch for ch in str(purpose or "") if 32 <= ord(ch) <= 126).strip()
+        remk = "".join(ch for ch in str(remarks or "") if 32 <= ord(ch) <= 126).strip()
 
         # Remove old CRC if present
         tlv.pop("63", None)
@@ -93,7 +96,7 @@ class PaymentQrEngine:
         if amt > 0:
             tlv["54"] = f"{amt:.2f}"
 
-        # Tag 62: Additional Data Field Template (Bill no, reference, purpose, terminal)
+        # Tag 62: Additional Data Field Template (Bill no, reference, purpose/remarks, terminal)
         sub_62: dict[str, str] = {}
         if "62" in tlv:
             sub_62 = cls.parse_emvco_tlv(tlv["62"])
@@ -101,8 +104,10 @@ class PaymentQrEngine:
             sub_62["01"] = bill_no[:25]
         if student:
             sub_62["05"] = student[:25]
-        if purp:
-            sub_62["08"] = purp[:25]
+        # In QR, set remark as bill no (Tag 62 Sub-tag 08 is Purpose / Remarks in Fonepay/EMVCo)
+        remark_val = remk or bill_no or purp
+        if remark_val:
+            sub_62["08"] = remark_val[:25]
 
         rebuilt_62 = "".join(f"{k}{len(v):02d}{v}" for k, v in sorted(sub_62.items()))
         if rebuilt_62:
@@ -155,6 +160,7 @@ class PaymentQrEngine:
         student = (data.student_name or "").strip()
         acc = (data.account_number or m_id).strip()
         provider = (data.provider or "Fonepay").strip()
+        remark = (data.remarks or bill_no or data.purpose).strip()
 
         # 1. If an exact merchant QR string (EMVCo) is saved in the account/settings, use it with dynamic amount/remarks
         if data.qr_payload and data.qr_payload.strip().startswith("000201"):
@@ -166,18 +172,20 @@ class PaymentQrEngine:
                     bill_number=bill_no,
                     student_name=student,
                     purpose=data.purpose,
+                    remarks=remark,
                 )
             return base
 
         if provider.lower() == "esewa":
-            # eSewa Digital QuickPay payload standard
+            # eSewa Digital QuickPay payload standard (su is Subject / Remark)
+            esewa_remark = remark or student or data.purpose
             if m_id or acc:
-                return f"https://esewa.com.np/#/quick-pay?rc={m_id or acc}&am={amt:.2f}&pid={bill_no}&su={student or data.purpose}"
+                return f"https://esewa.com.np/#/quick-pay?rc={m_id or acc}&am={amt:.2f}&pid={bill_no}&su={esewa_remark}"
             return f"esewa://pay?amt={amt:.2f}&ref={bill_no}&name={m_name}"
 
         elif provider.lower() == "khalti":
             if m_id or acc:
-                return f"https://khalti.com/pay?merchant={m_id or acc}&amount={amt:.2f}&ref={bill_no}&student={student}"
+                return f"https://khalti.com/pay?merchant={m_id or acc}&amount={amt:.2f}&ref={bill_no}&remark={remark}&student={student}"
             return f"khalti://pay?amount={amt:.2f}&ref={bill_no}"
 
         elif provider.lower() in ("fonepay", "phonepay", "bank", "bank transfer"):
@@ -196,6 +204,7 @@ class PaymentQrEngine:
                     bill_number=bill_no,
                     student_name=student,
                     purpose=data.purpose,
+                    remarks=remark,
                 )
             return base
 
@@ -204,7 +213,7 @@ class PaymentQrEngine:
             bc_text = f"|BANK:{data.bank_code}" if data.bank_code else ""
             return (
                 f"PAYMENT:{provider.upper()}{bc_text}|TO:{m_name}|ACC:{acc}|"
-                f"AMT:{amt:.2f}|REF:{bill_no}|NAME:{student}"
+                f"AMT:{amt:.2f}|REF:{bill_no}|REMARK:{remark}|NAME:{student}"
             )
 
     @classmethod
@@ -407,6 +416,7 @@ class PaymentQrEngine:
             except Exception:
                 pass
 
+        remark = (bill_number or purpose or "Tuition Fee").strip()
         return PaymentQrData(
             provider=provider,
             merchant_id=merchant_id,
@@ -418,6 +428,7 @@ class PaymentQrEngine:
             bill_number=bill_number,
             student_name=student_name,
             purpose=purpose,
+            remarks=remark,
             instructions=instructions,
             image_path=image_path,
             qr_payload=qr_payload,

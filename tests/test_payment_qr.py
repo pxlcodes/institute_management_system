@@ -89,7 +89,7 @@ class DummyPrinter:
 
 class PaymentQrTests(unittest.TestCase):
     def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.db_path = Path(self.temp_dir.name) / "test_elh.db"
         self.db = SQLiteDatabase(self.db_path, False)
         self.config = AppConfig(
@@ -129,7 +129,10 @@ class PaymentQrTests(unittest.TestCase):
         )
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_fonepay_payload_generation(self):
         data = PaymentQrData(
@@ -471,6 +474,74 @@ class PaymentQrTests(unittest.TestCase):
         )
         built_static = PaymentQrEngine.build_payload(qr_data_static)
         self.assertEqual(built_static, raw_emvco)
+
+    def test_qr_remark_set_as_bill_number(self):
+        raw_emvco = "0002010102110216427142002103914826400011fonepay.com07162222520021039149110115204829953035245802NP5919EXPERT LEARNING HUB6013PATHARI BRANC62110707216250863041866"
+        bill_no = "BILL-2083-05-888"
+
+        # 1. EMVCo dynamic QR: Verify Tag 62 Subtag 08 (Purpose/Remarks) is set to bill number
+        dynamic_payload = PaymentQrEngine.build_dynamic_emvco(
+            raw_emvco,
+            amount=3000.0,
+            bill_number=bill_no,
+            student_name="Nitesh Sharma",
+            purpose="Monthly Tuition Fee",
+        )
+        tlv = PaymentQrEngine.parse_emvco_tlv(dynamic_payload)
+        sub_62 = PaymentQrEngine.parse_emvco_tlv(tlv["62"])
+        self.assertEqual(sub_62["01"], bill_no)  # Bill No tag
+        self.assertEqual(sub_62["08"], bill_no)  # Remarks/Purpose tag
+
+        # 2. eSewa QuickPay: Verify 'su' (subject/remark) is set to bill number
+        esewa_data = PaymentQrData(
+            provider="eSewa",
+            merchant_id="EXP_ESEWA",
+            amount=3000.0,
+            bill_number=bill_no,
+            student_name="Nitesh Sharma",
+        )
+        esewa_payload = PaymentQrEngine.build_payload(esewa_data)
+        self.assertIn(f"pid={bill_no}", esewa_payload)
+        self.assertIn(f"su={bill_no}", esewa_payload)
+
+        # 3. from_settings: remarks attribute should default to bill_number
+        qr_data = PaymentQrEngine.from_settings(
+            self.settings, Decimal("3000.00"), bill_no, "Nitesh Sharma"
+        )
+        self.assertIsNotNone(qr_data)
+        self.assertEqual(qr_data.remarks, bill_no)
+
+        # 4. Web API: /api/bills/{bill_id}/qr should return remark equal to bill number
+        container = ServiceContainer.build(self.config, self.db)
+        app = create_app(self.config)
+        gen_res = container.billing.generate(
+            self.enrollment_id, "2083/04", "2083/04/01", "2083/04/08"
+        )
+        created_bill = gen_res.bill
+
+        async def scenario():
+            status, _, body = await _run_asgi_request(
+                app,
+                "POST",
+                "/api/auth/login",
+                body={"username": self.config.operator_username, "password": self.config.operator_password},
+            )
+            self.assertEqual(status, 200)
+            token = json.loads(body)["token"]
+            headers = {"authorization": f"Bearer {token}"}
+
+            status, _, body = await _run_asgi_request(
+                app,
+                "GET",
+                f"/api/bills/{created_bill.id}/qr",
+                headers=headers,
+            )
+            self.assertEqual(status, 200)
+            data = json.loads(body)
+            self.assertEqual(data["bill_number"], created_bill.bill_number)
+            self.assertEqual(data["remark"], created_bill.bill_number)
+
+        asyncio.run(scenario())
 
 
 if __name__ == "__main__":

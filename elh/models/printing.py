@@ -21,6 +21,13 @@ class Receipt:
     show_amounts: bool = True
     qr_payload: str = ""
     qr_caption: str = ""
+    class_name: str = ""
+    contact: str = ""
+    org_name: str = ""
+    org_address: str = ""
+    org_phone: str = ""
+    org_pan: str = ""
+    footer_note: str = ""
 
     @property
     def total(self) -> Decimal:

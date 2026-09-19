@@ -21,9 +21,13 @@ from .work_items import WorkItemsPage
 from .routines import RoutinesPage
 from .grades import GradesPage
 from .academic_calendar import AcademicCalendarPage
+from .inquiries import InquiriesPage
+from .proxy import ProxyClassesPage
+from .subjects import SubjectsPage
 
 __all__ = [
     "AccountsPage", "AdvancesPage", "DashboardPage", "EnrollmentsPage",
     "ExpensePage", "IncomePage", "LedgerPage", "SalaryPage",
     "StudentTransactionsPage", "StudentsPage", "TeachersPage", "TransfersPage", "CoursesPage", "SchoolsPage", "DueBillsPage", "ReportsPage", "AttendancePage", "AssistantPage", "DeviceHealthPage", "PosPrinterPage", "CertificatesPage", "WorkItemsPage", "RoutinesPage", "GradesPage", "AcademicCalendarPage",
+    "InquiriesPage", "ProxyClassesPage", "SubjectsPage",
 ]

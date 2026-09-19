@@ -183,31 +183,251 @@ class AttendanceService:
         return {**summary, "calendar_days": calendar_days}
 
     def teacher_period_summary(self, staff_id: int, salary_month: str) -> dict:
-        """Count scheduled routine periods for per-class/per-period staff pay."""
+        """Calculate scheduled routine classes, attendance in assigned classes, and proxy assignments."""
         start_at, end_at, calendar_days = self._month_range(salary_month, "Salary month")
         start_date = datetime.fromisoformat(start_at).date()
         end_date = datetime.fromisoformat(end_at).date()
-        routine_rows = self.repository.db.query(
-            "SELECT r.day_of_week,p.effective_from,p.effective_to FROM class_routines r "
-            "JOIN routine_plans p ON p.id=r.routine_plan_id "
-            "WHERE r.teacher_id=? AND r.status='Active'",
-            (int(staff_id),),
-        )
+
+        try:
+            calendar_events = self._calendar_events_between(start_date, end_date)
+        except Exception:
+            calendar_events = []
+
+        try:
+            routine_rows = [dict(r) for r in self.repository.db.query(
+                "SELECT r.id, r.class_name, r.day_of_week, r.period_label, r.subject_name, "
+                "r.course_id, r.start_time, r.end_time, "
+                "p.effective_from, p.effective_to "
+                "FROM class_routines r "
+                "LEFT JOIN routine_plans p ON p.id = r.routine_plan_id "
+                "WHERE r.teacher_id = ? AND r.status = 'Active'",
+                (int(staff_id),),
+            )]
+        except Exception:
+            routine_rows = []
+
+        present_dates_ad: set = set()
+        try:
+            attendance_rows = [dict(r) for r in self.repository.db.query(
+                "SELECT occurred_at FROM attendance_logs "
+                "WHERE person_type = 'teacher' AND person_id = ? "
+                "AND occurred_at BETWEEN ? AND ?",
+                (int(staff_id), start_at, end_at),
+            )]
+            for row in attendance_rows:
+                occ = row.get("occurred_at")
+                if isinstance(occ, datetime):
+                    present_dates_ad.add(occ.date())
+                elif occ:
+                    try:
+                        present_dates_ad.add(datetime.fromisoformat(str(occ).replace(" ", "T")).date())
+                    except Exception:
+                        pass
+        except Exception:
+            present_dates_ad = set()
+
+        proxy_rows = []
+        try:
+            proxy_rows = [dict(r) for r in self.repository.db.query(
+                "SELECT p.id, p.routine_id, p.class_date, p.original_teacher_id, p.proxy_teacher_id, "
+                "p.status, p.proxy_status, p.reason, p.leave_type, "
+                "r.class_name, r.subject_name, r.period_label, r.start_time, r.end_time, "
+                "COALESCE(ot.teacher_name, 'Teacher') AS original_teacher_name, "
+                "COALESCE(pt.teacher_name, 'Substitute') AS proxy_teacher_name "
+                "FROM proxy_class_requests p "
+                "JOIN class_routines r ON r.id = p.routine_id "
+                "LEFT JOIN teachers ot ON ot.id = p.original_teacher_id "
+                "LEFT JOIN teachers pt ON pt.id = p.proxy_teacher_id "
+                "WHERE (p.original_teacher_id = ? OR p.proxy_teacher_id = ?) "
+                "AND p.status = 'Approved' "
+                "AND (p.proxy_status != 'Declined' OR p.proxy_status IS NULL)",
+                (int(staff_id), int(staff_id)),
+            )]
+        except Exception:
+            proxy_rows = []
+
+        year, month = (int(part) for part in salary_month.split("/"))
+        month_prefix_1 = f"{year:04d}/{month:02d}/"
+        month_prefix_2 = f"{year:04d}/{month}/"
+
+        proxy_relieved_map: dict = {}
+        proxy_relieved_list: list[dict] = []
+        proxy_taken_list: list[dict] = []
+
+        for p in proxy_rows:
+            raw_date = p.get("class_date")
+            ad_date = None
+            bs_date = ""
+            ad_iso = ""
+
+            if isinstance(raw_date, datetime):
+                ad_date = raw_date.date()
+                bs_date = self._business_date_from_ad(ad_date)
+                ad_iso = ad_date.isoformat()
+            elif hasattr(raw_date, "year") and hasattr(raw_date, "month") and hasattr(raw_date, "day") and not isinstance(raw_date, str):
+                ad_date = raw_date
+                bs_date = self._business_date_from_ad(ad_date)
+                ad_iso = ad_date.isoformat()
+            elif raw_date:
+                str_val = str(raw_date).strip().split("T")[0].split(" ")[0]
+                if "/" in str_val:
+                    bs_date = str_val
+                    try:
+                        parts = [int(x) for x in bs_date.split("/")[:3]]
+                        ad_date = nepali.date(*parts).to_datetime_date()
+                        ad_iso = ad_date.isoformat()
+                    except Exception:
+                        ad_date = None
+                        ad_iso = ""
+                elif "-" in str_val:
+                    try:
+                        ad_date = datetime.fromisoformat(str_val).date()
+                        ad_iso = ad_date.isoformat()
+                        bs_date = self._business_date_from_ad(ad_date)
+                    except Exception:
+                        ad_date = None
+                        ad_iso = str_val
+                        bs_date = ""
+
+            is_in_month = False
+            if bs_date:
+                if bs_date.startswith(month_prefix_1) or bs_date.startswith(month_prefix_2):
+                    is_in_month = True
+                else:
+                    try:
+                        parts = [int(x) for x in bs_date.split("/")[:3]]
+                        if parts[0] == year and parts[1] == month:
+                            is_in_month = True
+                    except Exception:
+                        pass
+            if not is_in_month and ad_date is not None:
+                if start_date <= ad_date <= end_date:
+                    is_in_month = True
+
+            if not is_in_month:
+                continue
+
+            orig_id = p.get("original_teacher_id")
+            proxy_id = p.get("proxy_teacher_id")
+            routine_id = p.get("routine_id")
+            display_date = bs_date or ad_iso or str(raw_date or "")
+
+            if orig_id is not None and int(orig_id) == int(staff_id):
+                if bs_date:
+                    proxy_relieved_map[(routine_id, bs_date)] = p
+                if ad_iso:
+                    proxy_relieved_map[(routine_id, ad_iso)] = p
+                if ad_date is not None:
+                    proxy_relieved_map[(routine_id, ad_date)] = p
+                if raw_date:
+                    proxy_relieved_map[(routine_id, str(raw_date))] = p
+
+                proxy_relieved_list.append({
+                    "id": p["id"],
+                    "routine_id": routine_id,
+                    "class_date": display_date,
+                    "class_date_bs": bs_date,
+                    "class_date_ad": ad_iso,
+                    "class_name": p.get("class_name") or "",
+                    "subject_name": p.get("subject_name") or "",
+                    "period_label": p.get("period_label") or "",
+                    "start_time": p.get("start_time") or "",
+                    "end_time": p.get("end_time") or "",
+                    "proxy_teacher_name": p.get("proxy_teacher_name") or "Substitute",
+                    "reason": p.get("reason") or "",
+                    "leave_type": p.get("leave_type") or "Absent",
+                })
+
+            if proxy_id is not None and int(proxy_id) == int(staff_id):
+                proxy_taken_list.append({
+                    "id": p["id"],
+                    "routine_id": routine_id,
+                    "class_date": display_date,
+                    "class_date_bs": bs_date,
+                    "class_date_ad": ad_iso,
+                    "class_name": p.get("class_name") or "",
+                    "subject_name": p.get("subject_name") or "",
+                    "period_label": p.get("period_label") or "",
+                    "start_time": p.get("start_time") or "",
+                    "end_time": p.get("end_time") or "",
+                    "original_teacher_name": p.get("original_teacher_name") or "Regular Teacher",
+                    "reason": p.get("reason") or "",
+                    "leave_type": p.get("leave_type") or "Absent",
+                })
+
+        scheduled_classes = 0
+        attended_classes = 0
+        absent_classes = 0
+        relieved_classes = 0
         routine_days: list[str] = []
-        periods = 0
+
         for offset in range((end_date - start_date).days + 1):
             current_date = start_date + timedelta(days=offset)
             day_name = self._day_name(current_date)
             business_date = self._business_date_from_ad(current_date)
-            rows = [
-                row for row in routine_rows
-                if row["day_of_week"] == day_name
-                and row["effective_from"] <= business_date
-                and (not row["effective_to"] or row["effective_to"] > business_date)
-            ]
-            periods += len(rows)
-            routine_days.extend(str(row["day_of_week"]) for row in rows)
-        return {"scheduled_classes": periods, "routine_days": sorted(set(routine_days)), "calendar_days": calendar_days}
+
+            global_closure = any(
+                event["event_type"] in {"Holiday", "Closure"}
+                and event["course_id"] is None
+                and event["start_date"] <= business_date <= event["end_date"]
+                for event in calendar_events
+            )
+            if global_closure:
+                continue
+
+            for r in routine_rows:
+                if r["day_of_week"] != day_name:
+                    continue
+                if r.get("effective_from") and r["effective_from"] > business_date:
+                    continue
+                if r.get("effective_to") and r["effective_to"] <= business_date:
+                    continue
+
+                if r.get("course_id"):
+                    course_closure = any(
+                        event["event_type"] in {"Holiday", "Closure"}
+                        and event["course_id"] == r["course_id"]
+                        and event["start_date"] <= business_date <= event["end_date"]
+                        for event in calendar_events
+                    )
+                    if course_closure:
+                        continue
+
+                scheduled_classes += 1
+                routine_days.append(day_name)
+
+                # Check if relieved by proxy
+                is_relieved = (
+                    (r["id"], business_date) in proxy_relieved_map
+                    or (r["id"], current_date) in proxy_relieved_map
+                    or (r["id"], current_date.isoformat()) in proxy_relieved_map
+                )
+                if is_relieved:
+                    relieved_classes += 1
+                elif current_date in present_dates_ad:
+                    attended_classes += 1
+                else:
+                    absent_classes += 1
+
+        proxy_classes_taken = len(proxy_taken_list)
+        proxy_classes_relieved = len(proxy_relieved_list)
+        payable_classes = attended_classes + proxy_classes_taken
+
+        return {
+            "scheduled_classes": scheduled_classes,
+            "attended_classes": attended_classes,
+            "absent_classes": absent_classes,
+            "relieved_classes": relieved_classes,
+            "proxy_classes_taken": proxy_classes_taken,
+            "proxy_classes_relieved": proxy_classes_relieved,
+            "payable_classes": payable_classes,
+            "proxy_taken_list": proxy_taken_list,
+            "proxy_relieved_list": proxy_relieved_list,
+            "routine_days": sorted(set(routine_days)),
+            "calendar_days": calendar_days,
+        }
+
+    teacher_class_attendance_summary = teacher_period_summary
 
     @staticmethod
     def _day_name(value) -> str:
@@ -379,10 +599,17 @@ class AttendanceService:
         today_ad = datetime.now().date()
         today_bs = nepali.date.today().strftime("%Y/%m/%d")
         start_at, end_at, _ = self._month_range(nepali.date.today().strftime("%Y/%m"), "Attendance month")
+        month_start_ad = datetime.fromisoformat(start_at).date()
+        month_end_ad = datetime.fromisoformat(end_at).date()
         monthly_punches: dict[int, set] = defaultdict(set)
-        for row in self.repository.student_logs(start_at, end_at):
+        all_punches: dict[int, set] = defaultdict(set)
+        for row in self.repository.student_punch_dates():
             occurred = row["occurred_at"] if isinstance(row["occurred_at"], datetime) else datetime.fromisoformat(str(row["occurred_at"]))
-            monthly_punches[int(row["person_id"])].add(occurred.date())
+            punch_date = occurred.date()
+            sid = int(row["person_id"])
+            all_punches[sid].add(punch_date)
+            if month_start_ad <= punch_date <= month_end_ad:
+                monthly_punches[sid].add(punch_date)
         rows = self.repository.db.query(
             "SELECT s.id,s.student_name,s.class_name,s.contact,s.parent_name,"
             "GROUP_CONCAT(DISTINCT c.course_name) courses,GROUP_CONCAT(DISTINCT e.course_id) course_ids,"
@@ -407,7 +634,6 @@ class AttendanceService:
         for routine in routine_rows:
             routines_by_class[str(routine["class_name"] or "")].append(routine)
         alerts = []
-        month_start_ad = datetime.fromisoformat(start_at).date()
         for row in rows:
             try:
                 enrollment_start = self._business_date_to_ad(str(row["enrollment_start"]))
@@ -424,12 +650,28 @@ class AttendanceService:
             )
             if not working_dates:
                 continue
-            present = monthly_punches.get(int(row["id"]), set())
+            sid = int(row["id"])
+            student_punches = all_punches.get(sid, set())
+            monthly_present = monthly_punches.get(sid, set())
             monthly_working = [day for day in working_dates if day >= relevant_month_start]
-            missing_days = sum(day not in present for day in monthly_working)
+            missing_days = sum(day not in monthly_present for day in monthly_working)
+
+            last_seen = row["last_seen"]
+            last_seen_date = None
+            if last_seen:
+                if isinstance(last_seen, datetime):
+                    last_seen_date = last_seen.date()
+                else:
+                    try:
+                        last_seen_date = datetime.fromisoformat(str(last_seen)).date()
+                    except Exception:
+                        pass
+                if last_seen_date and last_seen_date < enrollment_start:
+                    last_seen_date = None
+
             consecutive_days = 0
             for day in reversed(working_dates):
-                if day in present:
+                if day in student_punches or (last_seen_date and day <= last_seen_date):
                     break
                 consecutive_days += 1
             reasons = []

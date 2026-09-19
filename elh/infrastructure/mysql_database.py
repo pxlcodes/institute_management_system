@@ -504,5 +504,41 @@ CREATE TABLE IF NOT EXISTS website_inquiries (
  staff_notes TEXT,
  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS subjects (
+ id INTEGER AUTO_INCREMENT PRIMARY KEY,
+ subject_code VARCHAR(50) NOT NULL UNIQUE,
+ subject_name VARCHAR(150) NOT NULL,
+ subject_type VARCHAR(50) NOT NULL DEFAULT 'Optional',
+ class_level_id INTEGER NULL,
+ class_name VARCHAR(100) NULL,
+ status VARCHAR(30) NOT NULL DEFAULT 'Active',
+ remarks TEXT,
+ created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS student_subjects (
+ id INTEGER AUTO_INCREMENT PRIMARY KEY,
+ student_id INTEGER NOT NULL,
+ subject_id INTEGER NOT NULL,
+ enrollment_type VARCHAR(50) NOT NULL DEFAULT 'Optional',
+ assigned_date VARCHAR(30) NULL,
+ status VARCHAR(30) NOT NULL DEFAULT 'Active',
+ remarks TEXT,
+ created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ UNIQUE KEY uq_student_subject(student_id, subject_id),
+ FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE,
+ FOREIGN KEY(subject_id) REFERENCES subjects(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS teacher_subjects (
+ id INTEGER AUTO_INCREMENT PRIMARY KEY,
+ teacher_id INTEGER NOT NULL,
+ subject_id INTEGER NOT NULL,
+ status VARCHAR(30) NOT NULL DEFAULT 'Active',
+ remarks TEXT,
+ created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ UNIQUE KEY uq_teacher_subject(teacher_id, subject_id),
+ FOREIGN KEY(teacher_id) REFERENCES teachers(id) ON DELETE CASCADE,
+ FOREIGN KEY(subject_id) REFERENCES subjects(id) ON DELETE CASCADE
 ) ENGINE=InnoDB
 """
+

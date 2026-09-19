@@ -11,6 +11,7 @@ class PaymentProofMixin:
         ttk.Button(bar,text="Print POS Receipt",command=self.print_proof_pos).pack(side="right",padx=3)
         ttk.Button(bar,text="Print Normal Receipt",command=self.print_proof_normal).pack(side="right",padx=3)
         ttk.Button(bar,text="Open Receipt PDF",style="Accent.TButton",command=self.open_proof_pdf).pack(side="right",padx=3)
+        return bar
     def selected_proof_id(self):
         selected=self.tree.selection()
         if not selected:raise ValueError("Select a payment record first.")

@@ -202,9 +202,9 @@ move or duplicate existing data.
 
 Install its additional server packages once, then start it:
 
-```powershell
+```cmd
 python -m pip install -r requirements-web.txt
-.\run_web.ps1
+run_web.bat
 ```
 
 Open `http://localhost:8080` in a browser. Sign in using an enabled account already managed in the

@@ -24,10 +24,13 @@ def create_attendance_device(config: AppConfig):
     return UnavailableAttendanceDevice(f"Unsupported attendance driver: {config.attendance_driver}")
 
 
-def create_receipt_printer(config: AppConfig):
+def create_receipt_printer(config: AppConfig, db=None):
     driver = config.pos_printer_driver.strip().lower()
     if driver in {"", "disabled", "off", "false", "none"}:
         return DisabledReceiptPrinter()
+    if driver in {"cloud_spool", "spool", "queue", "cloud"}:
+        from .printing.cloud_spool import CloudSpoolReceiptPrinter
+        return CloudSpoolReceiptPrinter(db=db)
     if driver in {"enabled", "on", "true", "network", "escpos"}:
         driver = "network_escpos"
     if driver == "network_escpos":

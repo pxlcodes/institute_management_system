@@ -21,6 +21,8 @@ class DueBill:
     status: str
     pdf_path: str = ""
     contact: str = ""
+    class_name: str = ""
+    remarks: str = ""
 
 
 @dataclass(frozen=True)

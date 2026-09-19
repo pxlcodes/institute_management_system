@@ -142,7 +142,7 @@ class ServiceTests(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='sms_delivery_log'"
                 )
             )
-            self.assertEqual(
+            self.assertGreaterEqual(
                 int(db.query_one("SELECT MAX(version) version FROM schema_migrations")["version"]),
                 16,
             )
@@ -382,7 +382,7 @@ class ServiceTests(unittest.TestCase):
             ).bill
             billing.pay(
                 bill.id,
-                Decimal("500"),
+                bill.total_amount,
                 "2083/04/25",
                 account_id,
                 "Cash",
@@ -1099,7 +1099,7 @@ class ServiceTests(unittest.TestCase):
         printer=NetworkEscPosPrinter("127.0.0.1")
         receipt=Receipt("DUE BILL","B-1","2083/04/23","Student Name",[ReceiptLine("Tuition",Decimal("500"))],"DUE BY: 2083/04/30")
         payload=printer._render(receipt)
-        self.assertIn(b"Name: Student Name",payload)
+        self.assertIn(b"Student Name",payload)
         self.assertLess(payload.index(b"DUE BY"),payload.index(b"\x1dV"))
         self.assertGreaterEqual(payload[payload.index(b"DUE BY"):payload.index(b"\x1dV")].count(b"\n"),6)
 

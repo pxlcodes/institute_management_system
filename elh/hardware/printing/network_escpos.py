@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import socket
+from decimal import Decimal
 
 from elh.models import Receipt
 from .base import ReceiptPrinterError
@@ -15,20 +16,41 @@ class NetworkEscPosPrinter:
         self.host, self.port, self.width = host, port, width
 
     def _render(self, receipt: Receipt) -> bytes:
-        lines = [receipt.title.center(self.width), f"Receipt: {receipt.receipt_number}",
-                 f"Date: {receipt.issued_at}"]
+        lines = []
+        if getattr(receipt, "org_name", ""):
+            lines.append(receipt.org_name.center(self.width))
+        if getattr(receipt, "org_address", ""):
+            lines.append(receipt.org_address.center(self.width))
+        meta = []
+        if getattr(receipt, "org_phone", ""):
+            meta.append(f"Phone: {receipt.org_phone}")
+        if getattr(receipt, "org_pan", ""):
+            meta.append(f"PAN: {receipt.org_pan}")
+        if meta:
+            lines.append(" | ".join(meta).center(self.width))
+        if getattr(receipt, "org_name", ""):
+            lines.append("-" * self.width)
+
+        lines.append(receipt.title.center(self.width))
+        lines.append(f"Bill No : {receipt.receipt_number}")
+        lines.append(f"Date    : {receipt.issued_at}")
         if receipt.customer_name:
-            lines.append(f"Name: {receipt.customer_name}")
+            lines.append(f"Student : {receipt.customer_name}")
+        if getattr(receipt, "contact", ""):
+            lines.append(f"Contact : {receipt.contact}")
+        if getattr(receipt, "class_name", ""):
+            lines.append(f"Class   : {receipt.class_name}")
         lines.append("-" * self.width)
         for item in receipt.lines:
-            if receipt.show_amounts:
-                amount = f"{item.amount:.2f}"
-                lines.append(f"{item.description[:self.width-len(amount)-1]:<{self.width-len(amount)}}{amount}")
+            if receipt.show_amounts and item.amount != Decimal("0"):
+                amount = f"{item.amount:,.2f}"
+                desc_max = self.width - len(amount) - 1
+                lines.append(f"{item.description[:desc_max]:<{desc_max}} {amount}")
             else:
                 lines.append(item.description[:self.width])
         lines.append("-" * self.width)
         if receipt.show_amounts:
-            lines.append(f"TOTAL {receipt.total:.2f}".rjust(self.width))
+            lines.append(f"TOTAL {receipt.total:,.2f}".rjust(self.width))
 
         text_part = b"\x1b@" + "\n".join(lines).encode("utf-8", errors="replace") + b"\n"
 
@@ -43,7 +65,12 @@ class NetworkEscPosPrinter:
             )
             qr_part += b"\n"
 
-        footer_lines = ["", receipt.footer.center(self.width), "", "", "", "", "", ""]
+        footer_lines = [""]
+        if getattr(receipt, "footer_note", ""):
+            footer_lines.append(receipt.footer_note.center(self.width))
+        if receipt.footer:
+            footer_lines.append(receipt.footer.center(self.width))
+        footer_lines.extend(["", "", "", "", "", ""])
         footer_part = "\n".join(footer_lines).encode("utf-8", errors="replace") + b"\x1dV\x00"
         return text_part + qr_part + footer_part
 

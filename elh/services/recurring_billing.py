@@ -158,7 +158,7 @@ class RecurringBillingService:
         eligible_rows = []
         enrollment_ids = []
         for r in rows:
-            start_m = str(r["start_date"] or "")[:7]
+            start_m = self.billing.get_effective_billing_start_month(str(r["start_date"] or ""))
             end_m = str(r["end_date"] or "")[:7] if r["end_date"] else None
             if start_m and start_m > target:
                 continue

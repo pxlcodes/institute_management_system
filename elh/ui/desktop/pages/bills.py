@@ -14,6 +14,7 @@ class DueBillsPage(CrudPage):
         self.enrollment_map = {}
         self.selected_bill_id = None
         self.all_bills = []
+        self.all_payments = []
 
         ttk.Label(self, text="Student Due Bills & Credit Management", style="Title.TLabel").pack(anchor="w")
 
@@ -63,6 +64,18 @@ class DueBillsPage(CrudPage):
         self.status_combo.pack(side="left", padx=(0, 10))
         self.status_combo.bind("<<ComboboxSelected>>", self.on_filter_changed)
 
+        ttk.Label(filter_row, text="Class:", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 4))
+        self.filter_class_var = tk.StringVar(value="All Classes")
+        self.class_combo = ttk.Combobox(
+            filter_row,
+            textvariable=self.filter_class_var,
+            values=["All Classes"],
+            state="readonly",
+            width=14,
+        )
+        self.class_combo.pack(side="left", padx=(0, 10))
+        self.class_combo.bind("<<ComboboxSelected>>", self.on_filter_changed)
+
         ttk.Label(filter_row, text="Period:", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 4))
         self.filter_period_var = tk.StringVar(value="All Periods")
         self.period_combo = ttk.Combobox(
@@ -100,25 +113,29 @@ class DueBillsPage(CrudPage):
             student_area,
             [
                 ("id", "Student ID", 65),
-                ("student", "Student Name", 170),
+                ("student", "Student Name", 160),
+                ("class_name", "Class", 85),
                 ("contact", "Contact / Phone", 110),
-                ("courses", "Enrolled Course(s)", 200),
+                ("courses", "Enrolled Course(s)", 180),
                 ("unpaid_count", "Unpaid Months", 100),
-                ("periods", "Pending Periods", 180),
-                ("total_due", "Total Overdue (Rs.)", 125),
+                ("periods", "Pending Periods", 160),
+                ("total_due", "Total Overdue (Rs.)", 120),
             ],
         )
-        self.student_tree.configure(selectmode="browse")
+        self.student_tree.configure(selectmode="extended")
         self.student_tree.bind("<Double-1>", self.on_student_double_click)
 
         student_toolbar = ttk.Frame(self.tab_student)
         student_toolbar.pack(fill="x", pady=(6, 0))
-        ttk.Button(student_toolbar, text="📄 Print Consolidated Statement", style="Accent.TButton", command=self.open_student_statement).pack(side="left", padx=(0, 6))
+        ttk.Button(student_toolbar, text="Select All Students", command=lambda: self.student_tree.selection_set(self.student_tree.get_children())).pack(side="left")
+        ttk.Button(student_toolbar, text="Clear Selection", command=lambda: self.student_tree.selection_remove(self.student_tree.selection())).pack(side="left", padx=5)
+        ttk.Button(student_toolbar, text="📄 Print Consolidated Statement", style="Accent.TButton", command=self.open_student_statement).pack(side="left", padx=(0, 4))
         ttk.Button(student_toolbar, text="💳 Settle All Dues", style="Accent.TButton", command=self.open_student_payment).pack(side="left", padx=4)
         if getattr(self.app.services, "settings", None) and self.app.services.settings.get_bool("whatsapp_enabled", False):
             ttk.Button(student_toolbar, text="💬 WhatsApp Due Notice", command=self.send_student_whatsapp).pack(side="left", padx=4)
-        ttk.Button(student_toolbar, text="🔍 View Detailed Bills", command=self.view_student_bills_in_detailed_tab).pack(side="left", padx=6)
-        ttk.Label(student_toolbar, text="💡 Double-click a student to print their consolidated statement", font=("Segoe UI", 8, "italic"), foreground="#64748B").pack(side="right")
+        ttk.Button(student_toolbar, text="🔍 View Detailed Bills", command=self.view_student_bills_in_detailed_tab).pack(side="left", padx=4)
+        ttk.Button(student_toolbar, text="🖨️ Print POS (Class)", style="Accent.TButton", command=self.open_print_pos_by_class_dialog).pack(side="right", padx=3)
+        ttk.Button(student_toolbar, text="Batch POS Print", command=self.print_pos_students_batch).pack(side="right", padx=3)
 
         # Tab 2: Detailed Bills List
         self.tab_detailed = ttk.Frame(self.notebook, padding=4)
@@ -130,38 +147,80 @@ class DueBillsPage(CrudPage):
             area,
             [
                 ("id", "ID", 45),
-                ("bill", "Bill No.", 150),
-                ("student", "Student", 160),
-                ("course", "Course", 170),
+                ("bill", "Bill No.", 140),
+                ("student", "Student", 150),
+                ("class_name", "Class", 85),
+                ("course", "Course", 160),
                 ("period", "Period", 85),
-                ("issue", "Issue", 90),
-                ("due", "Due", 90),
-                ("amount", "Total", 90),
-                ("paid", "Paid", 90),
-                ("balance", "Balance", 90),
-                ("status", "Status", 100),
+                ("issue", "Issue", 85),
+                ("due", "Due", 85),
+                ("amount", "Total", 85),
+                ("paid", "Paid", 85),
+                ("balance", "Balance", 85),
+                ("status", "Status", 95),
             ],
         )
         self.tree.configure(selectmode="extended")
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
+        self.tree.bind("<Double-1>", lambda e: self.open_edit_bill())
 
         batch = ttk.Frame(self.tab_detailed)
         batch.pack(fill="x", pady=(6, 0))
         ttk.Button(batch, text="Select All Bills", command=lambda: self.tree.selection_set(self.tree.get_children())).pack(side="left")
         ttk.Button(batch, text="Clear Selection", command=lambda: self.tree.selection_remove(self.tree.selection())).pack(side="left", padx=5)
         ttk.Button(batch, text="Pay Selected Bill(s)", style="Accent.TButton", command=self.open_payment).pack(side="left", padx=8)
+        ttk.Button(batch, text="✏️ Edit Bill", command=self.open_edit_bill).pack(side="left", padx=4)
+        ttk.Button(batch, text="💳 View Payments", command=self.open_bill_payments).pack(side="left", padx=4)
+        if self.is_admin():
+            ttk.Button(batch, text="🗑️ Delete Bill", command=self.delete_selected_bill).pack(side="left", padx=4)
         ttk.Button(batch, text="📄 Consolidated Statement", command=self.open_consolidated_statement).pack(side="left", padx=4)
         if getattr(self.app.services, "settings", None) and self.app.services.settings.get_bool("whatsapp_enabled", False):
             ttk.Button(batch, text="💬 WhatsApp Bill", command=self.send_whatsapp_bill).pack(side="left", padx=4)
         ttk.Button(batch, text="Open Batch PDF", command=self.open_batch_pdf).pack(side="right", padx=3)
         ttk.Button(batch, text="Print Batch PDF", command=self.print_batch_pdf).pack(side="right", padx=3)
+        ttk.Button(batch, text="🖨️ Print POS (Class)", style="Accent.TButton", command=self.open_print_pos_by_class_dialog).pack(side="right", padx=3)
         ttk.Button(batch, text="Batch POS Print", command=self.print_pos_batch).pack(side="right", padx=3)
+
+        # Tab 3: Payment Records & Receipts
+        self.tab_payments = ttk.Frame(self.notebook, padding=4)
+        self.notebook.add(self.tab_payments, text="  💳 Payment Records & Receipts  ")
+
+        pay_area = ttk.Frame(self.tab_payments)
+        pay_area.pack(fill="both", expand=True)
+        self.payment_tree = self.make_tree(
+            pay_area,
+            [
+                ("id", "Txn ID", 60),
+                ("date", "Date", 85),
+                ("student", "Student Name", 150),
+                ("class_name", "Class", 80),
+                ("particular", "Bill # / Particular", 220),
+                ("amount", "Paid (Rs.)", 90),
+                ("discount", "Discount (Rs.)", 90),
+                ("account", "Account", 130),
+                ("method", "Method", 80),
+                ("receipt", "Receipt #", 95),
+            ],
+        )
+        self.payment_tree.configure(selectmode="browse")
+        self.payment_tree.bind("<Double-1>", lambda e: self.open_selected_payment_pdf())
+
+        pay_toolbar = ttk.Frame(self.tab_payments)
+        pay_toolbar.pack(fill="x", pady=(6, 0))
+        self.del_pay_tab_btn = ttk.Button(pay_toolbar, text="🗑️ Delete Payment Record", command=self.delete_payment_from_tab)
+        self.del_pay_tab_btn.pack(side="left")
+        ttk.Button(pay_toolbar, text="📄 Open Receipt PDF", style="Accent.TButton", command=self.open_selected_payment_pdf).pack(side="left", padx=4)
+        ttk.Button(pay_toolbar, text="🖨️ Print Receipt", command=self.print_selected_payment_receipt).pack(side="left", padx=4)
+        if getattr(self.app.services, "settings", None) and self.app.services.settings.get_bool("whatsapp_enabled", False):
+            ttk.Button(pay_toolbar, text="💬 WhatsApp Receipt", command=self.send_selected_payment_whatsapp).pack(side="left", padx=4)
+        ttk.Button(pay_toolbar, text="🔄 Refresh Payments", command=self.refresh_payments_tab).pack(side="right", padx=3)
 
     def on_filter_changed(self, *_args):
         self.apply_filters()
 
     def reset_filters(self):
         self.filter_status_var.set("Pending Dues Only (Credit)")
+        self.filter_class_var.set("All Classes")
         self.filter_period_var.set("All Periods")
         self.search_var.set("")
         self.apply_filters()
@@ -176,6 +235,22 @@ class DueBillsPage(CrudPage):
         self.enrollment_combo["values"] = list(self.enrollment_map)
 
         self.all_bills = self.app.services.billing.repository.list()
+        self.all_payments = self.app.services.billing.list_payment_records(limit=1000)
+
+        classes = ["All Classes"]
+        db_classes = self.db.query(
+            "SELECT DISTINCT COALESCE(cl.level_name, s.class_name) AS cname "
+            "FROM students s "
+            "LEFT JOIN class_levels cl ON cl.id = s.class_level_id "
+            "WHERE COALESCE(cl.level_name, s.class_name) IS NOT NULL "
+            "  AND COALESCE(cl.level_name, s.class_name) <> '' "
+            "ORDER BY cname"
+        )
+        for r in db_classes:
+            if r["cname"] and r["cname"] not in classes:
+                classes.append(r["cname"])
+        self.class_combo["values"] = classes
+
         all_periods = set()
         for b in self.all_bills:
             if b.billing_period:
@@ -188,6 +263,7 @@ class DueBillsPage(CrudPage):
 
     def apply_filters(self):
         status_choice = self.filter_status_var.get()
+        class_choice = self.filter_class_var.get()
         period_choice = self.filter_period_var.get()
         search_kw = self.search_var.get().strip().lower()
 
@@ -196,6 +272,7 @@ class DueBillsPage(CrudPage):
         summaries = self.app.services.billing.get_student_dues_summary(
             min_unpaid_months=min_months,
             search=search_kw,
+            class_name="" if class_choice == "All Classes" else class_choice,
         )
         self.clear_tree(self.student_tree)
         total_credit_due = Decimal("0")
@@ -214,6 +291,7 @@ class DueBillsPage(CrudPage):
                 values=(
                     s["student_id"],
                     s["student_name"],
+                    s.get("class_name") or "—",
                     s["contact"] or "—",
                     s["course_name"],
                     months_text,
@@ -240,6 +318,12 @@ class DueBillsPage(CrudPage):
             if "Fully Paid" in status_choice and rem > Decimal("0"):
                 continue
 
+            # Class filter
+            if class_choice != "All Classes":
+                b_class = getattr(b, "class_name", "") or ""
+                if b_class.strip().lower() != class_choice.strip().lower():
+                    continue
+
             # Period filter
             if period_choice != "All Periods":
                 seg_list = self.app.services.billing.segregate_period(b.billing_period)
@@ -249,7 +333,7 @@ class DueBillsPage(CrudPage):
             # Search filter
             if search_kw:
                 seg_str = " ".join(self.app.services.billing.segregate_period(b.billing_period))
-                match_content = f"{b.bill_number} {b.student_name} {b.course_name} {getattr(b, 'contact', '')} {b.billing_period} {seg_str}".lower()
+                match_content = f"{b.bill_number} {b.student_name} {getattr(b, 'class_name', '')} {b.course_name} {getattr(b, 'contact', '')} {b.billing_period} {seg_str}".lower()
                 if search_kw not in match_content:
                     continue
 
@@ -263,6 +347,7 @@ class DueBillsPage(CrudPage):
                     b.id,
                     b.bill_number,
                     b.student_name,
+                    getattr(b, "class_name", "") or "—",
                     b.course_name,
                     period_val,
                     b.issue_date,
@@ -274,8 +359,56 @@ class DueBillsPage(CrudPage):
                 ),
             )
 
+        # 3. Update Payment Records Tree
+        self.clear_tree(self.payment_tree)
+        filtered_payments = []
+        tot_pay_amt = Decimal("0")
+        for p in getattr(self, "all_payments", []):
+            if class_choice != "All Classes":
+                p_class = str(p.get("class_name") or "")
+                if p_class.strip().lower() != class_choice.strip().lower():
+                    continue
+
+            if period_choice != "All Periods":
+                p_date = str(p.get("transaction_date") or "")
+                p_part = str(p.get("particular") or "")
+                if period_choice not in p_date and period_choice not in p_part:
+                    continue
+
+            if search_kw:
+                p_match = f"{p['id']} {p.get('student_name', '')} {p.get('class_name', '')} {p.get('particular', '')} {p.get('receipt_no', '')} {p.get('account_name', '')}".lower()
+                if search_kw not in p_match:
+                    continue
+
+            filtered_payments.append(p)
+            amt = Decimal(str(p.get("payment_amount") or 0))
+            tot_pay_amt += amt
+            disc = Decimal(str(p.get("discount_amount") or 0))
+            self.payment_tree.insert(
+                "",
+                "end",
+                values=(
+                    p["id"],
+                    p.get("transaction_date") or "—",
+                    p.get("student_name") or "—",
+                    p.get("class_name") or "—",
+                    p.get("particular") or p.get("remarks") or "—",
+                    money(amt),
+                    money(disc),
+                    p.get("account_name") or "—",
+                    p.get("payment_method") or "—",
+                    p.get("receipt_no") or "—",
+                ),
+            )
+
+        if hasattr(self, "del_pay_tab_btn"):
+            if self.is_admin():
+                self.del_pay_tab_btn.configure(text="🗑️ Delete Payment Record", state="normal")
+            else:
+                self.del_pay_tab_btn.configure(text="🔒 Delete Payment (Admin Only)", state="disabled")
+
         self.summary_label.configure(
-            text=f"Credit Defaulters: {len(summaries)} student(s) · Total Due: {money(total_credit_due)} | Bills Listed: {len(filtered_bills)}"
+            text=f"Defaulters: {len(summaries)} · Due: {money(total_credit_due)} | Bills: {len(filtered_bills)} | Payments: {len(filtered_payments)}"
         )
 
     def generate(self):
@@ -307,19 +440,28 @@ class DueBillsPage(CrudPage):
         if selected:
             self.selected_bill_id = int(self.tree.item(selected[0], "values")[0])
 
+    def selected_student_ids(self) -> list[int]:
+        selected = self.student_tree.selection()
+        if not selected:
+            raise ValueError("Select one or more students first.")
+        return [int(self.student_tree.item(item, "values")[0]) for item in selected]
+
     def on_student_double_click(self, _event=None):
         self.open_student_statement()
 
     def open_student_statement(self):
         sel = self.student_tree.selection()
         if not sel:
-            messagebox.showwarning("Select Student", "Please select a student from the list first.", parent=self)
+            messagebox.showwarning("Select Student", "Please select one or more students from the list first.", parent=self)
             return
-        item = self.student_tree.item(sel[0])
-        student_id = int(item["values"][0])
+        if len(sel) > 5 and not messagebox.askyesno("Open Statements", f"This will generate and open statements for {len(sel)} students.\nDo you wish to continue?", parent=self):
+            return
         try:
-            path = self.app.services.billing.create_consolidated_statement_pdf(student_id=student_id)
-            os.startfile(path)
+            for item_id in sel:
+                item = self.student_tree.item(item_id)
+                student_id = int(item["values"][0])
+                path = self.app.services.billing.create_consolidated_statement_pdf(student_id=student_id)
+                os.startfile(path)
         except Exception as exc:
             self.show_error(exc)
 
@@ -327,6 +469,9 @@ class DueBillsPage(CrudPage):
         sel = self.student_tree.selection()
         if not sel:
             messagebox.showwarning("Select Student", "Please select a student from the list first.", parent=self)
+            return
+        if len(sel) > 1:
+            messagebox.showwarning("Single Student Only", "Payment settlement can only be processed for one student at a time.\nPlease select a single student.", parent=self)
             return
         item = self.student_tree.item(sel[0])
         student_id = int(item["values"][0])
@@ -351,6 +496,9 @@ class DueBillsPage(CrudPage):
         if not sel:
             messagebox.showwarning("Select Student", "Please select a student from the list first.", parent=self)
             return
+        if len(sel) > 1:
+            messagebox.showwarning("Single Student Only", "WhatsApp notice can only be previewed and sent to one student at a time.\nPlease select a single student.", parent=self)
+            return
         item = self.student_tree.item(sel[0])
         student_id = int(item["values"][0])
         bills = self.app.services.billing.repository.get_unpaid_bills_for_student(student_id)
@@ -360,6 +508,198 @@ class DueBillsPage(CrudPage):
         latest_bill = bills[-1]
         self.selected_bill_id = latest_bill.id
         self.send_whatsapp_bill()
+
+    def print_pos_students_batch(self):
+        try:
+            student_ids = self.selected_student_ids()
+        except Exception as exc:
+            self.show_error(exc)
+            return
+
+        total_bills_count = 0
+        total_due_amount = Decimal("0")
+        for sid in student_ids:
+            bills = self.app.services.billing.repository.get_unpaid_bills_for_student(sid)
+            total_bills_count += len(bills)
+            total_due_amount += sum(max(Decimal("0"), b.total_amount - b.paid_amount) for b in bills)
+
+        if total_bills_count == 0:
+            messagebox.showinfo("No Dues", "The selected student(s) have no unpaid dues.", parent=self)
+            return
+
+        num_students = len(student_ids)
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Batch POS Print ({num_students} Student{'s' if num_students > 1 else ''})")
+        dialog.geometry("520x330")
+        dialog.resizable(False, False)
+        dialog.transient(self.winfo_toplevel())
+        dialog.grab_set()
+
+        content = ttk.Frame(dialog, padding=16)
+        content.pack(fill="both", expand=True)
+
+        ttk.Label(
+            content,
+            text="🖨️ Bulk POS Printing — Student Credit",
+            font=("Segoe UI", 12, "bold"),
+            foreground="#102A43",
+        ).pack(anchor="w", pady=(0, 4))
+
+        summary_text = (
+            f"Selected: {num_students} student(s) · {total_bills_count} unpaid bill(s)\n"
+            f"Total Overdue: {money(total_due_amount)}"
+        )
+        ttk.Label(content, text=summary_text, font=("Segoe UI", 9), foreground="#0369A1").pack(anchor="w", pady=(0, 12))
+
+        ttk.Label(content, text="Select POS Receipt Format:", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(0, 6))
+
+        mode_var = tk.StringVar(value="statement")
+        r1 = ttk.Radiobutton(
+            content,
+            text=f"📄 Consolidated Statements ({num_students} receipt{'s' if num_students > 1 else ''})\n    1 summary slip per student with all overdue months, total balance & QR.",
+            variable=mode_var,
+            value="statement",
+        )
+        r1.pack(anchor="w", pady=4)
+
+        r2 = ttk.Radiobutton(
+            content,
+            text=f"🧾 Individual Due Bills ({total_bills_count} receipt{'s' if total_bills_count > 1 else ''})\n    Separate slip for each pending monthly due bill.",
+            variable=mode_var,
+            value="bills",
+        )
+        r2.pack(anchor="w", pady=4)
+
+        button_box = ttk.Frame(content)
+        button_box.pack(fill="x", side="bottom", pady=(16, 0))
+
+        def execute_print():
+            dialog.destroy()
+            try:
+                mode = mode_var.get()
+                if mode == "statement":
+                    printed_count = self.app.services.billing.print_pos_student_statements(student_ids)
+                    messagebox.showinfo(
+                        "Batch Printed",
+                        f"Sent {printed_count} student consolidated statement(s) to the POS printer.",
+                        parent=self,
+                    )
+                else:
+                    printed_count = self.app.services.billing.print_pos_student_bills(student_ids)
+                    messagebox.showinfo(
+                        "Batch Printed",
+                        f"Sent {printed_count} individual due bill(s) to the POS printer.",
+                        parent=self,
+                    )
+            except Exception as err:
+                self.show_error(err)
+
+        ttk.Button(button_box, text="🖨️ Send to POS Printer", style="Accent.TButton", command=execute_print).pack(side="left")
+        ttk.Button(button_box, text="Cancel", command=dialog.destroy).pack(side="right")
+
+    def open_print_pos_by_class_dialog(self):
+        dialog = tk.Toplevel(self)
+        dialog.title("🖨️ Print Bill POS by Class")
+        dialog.geometry("540x390")
+        dialog.resizable(False, False)
+        dialog.transient(self.winfo_toplevel())
+        dialog.grab_set()
+
+        content = ttk.Frame(dialog, padding=16)
+        content.pack(fill="both", expand=True)
+
+        ttk.Label(
+            content,
+            text="🖨️ Filter & Print POS Bills by Class",
+            font=("Segoe UI", 12, "bold"),
+            foreground="#102A43",
+        ).pack(anchor="w", pady=(0, 4))
+
+        ttk.Label(
+            content,
+            text="Print thermal POS receipts for all unpaid students in a selected class/grade.",
+            font=("Segoe UI", 9),
+            foreground="#475569",
+        ).pack(anchor="w", pady=(0, 10))
+
+        form = ttk.Frame(content)
+        form.pack(fill="x", pady=(0, 10))
+
+        ttk.Label(form, text="Select Class / Grade:", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, sticky="w", pady=4, padx=(0, 8))
+
+        current_class = self.filter_class_var.get()
+        class_options = list(self.class_combo["values"])
+        if not class_options:
+            class_options = ["All Classes"]
+        dlg_class_var = tk.StringVar(value=current_class if current_class in class_options else class_options[0])
+
+        class_dropdown = ttk.Combobox(form, textvariable=dlg_class_var, values=class_options, state="readonly", width=24)
+        class_dropdown.grid(row=0, column=1, sticky="w", pady=4)
+
+        stats_card = ttk.LabelFrame(content, text="Class Summary (Unpaid Dues)", padding=10)
+        stats_card.pack(fill="x", pady=(4, 10))
+
+        stats_label = ttk.Label(stats_card, text="", font=("Segoe UI", 9, "bold"), foreground="#0369A1", justify="left")
+        stats_label.pack(anchor="w")
+
+        def update_stats(*_args):
+            sel_class = dlg_class_var.get()
+            unpaid_bills = self.app.services.billing.get_unpaid_bills_by_class(
+                "" if sel_class == "All Classes" else sel_class
+            )
+            s_ids = {b.student_id for b in unpaid_bills}
+            tot_due = sum(max(Decimal("0"), b.total_amount - b.paid_amount) for b in unpaid_bills)
+            stats_label.configure(
+                text=f"Target: {sel_class}\n"
+                     f"• Unpaid Students: {len(s_ids)}\n"
+                     f"• Pending Unpaid Bills: {len(unpaid_bills)}\n"
+                     f"• Total Balance Overdue: {money(tot_due)}"
+            )
+
+        class_dropdown.bind("<<ComboboxSelected>>", update_stats)
+        update_stats()
+
+        ttk.Label(content, text="Select POS Receipt Format:", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(0, 4))
+        mode_var = tk.StringVar(value="statement")
+        r1 = ttk.Radiobutton(
+            content,
+            text="📄 Consolidated Statements (1 summary slip per student with all overdue months & QR)",
+            variable=mode_var,
+            value="statement",
+        )
+        r1.pack(anchor="w", pady=3)
+        r2 = ttk.Radiobutton(
+            content,
+            text="🧾 Individual Due Bills (Separate slip for each pending monthly due bill)",
+            variable=mode_var,
+            value="bills",
+        )
+        r2.pack(anchor="w", pady=3)
+
+        btn_box = ttk.Frame(content)
+        btn_box.pack(fill="x", side="bottom", pady=(12, 0))
+
+        def execute_print():
+            sel_class = dlg_class_var.get()
+            chosen_mode = mode_var.get()
+            dialog.destroy()
+            try:
+                res = self.app.services.billing.print_pos_by_class(
+                    "" if sel_class == "All Classes" else sel_class,
+                    mode=chosen_mode,
+                )
+                fmt_name = "statement(s)" if res["mode"] == "statement" else "bill receipt(s)"
+                messagebox.showinfo(
+                    "POS Print Completed",
+                    f"Successfully sent {res['printed_count']} {fmt_name} for Class '{res['class_name']}' ({res['student_count']} student(s)) to the POS printer.",
+                    parent=self,
+                )
+                self.refresh()
+            except Exception as err:
+                self.show_error(err)
+
+        ttk.Button(btn_box, text="🖨️ Send to POS Printer", style="Accent.TButton", command=execute_print).pack(side="left")
+        ttk.Button(btn_box, text="Cancel", command=dialog.destroy).pack(side="right")
 
     def selected_bill(self):
         if not self.selected_bill_id:
@@ -405,6 +745,7 @@ class DueBillsPage(CrudPage):
             return
 
         student_name = bills[0].student_name
+        student_class = getattr(bills[0], "class_name", "") or ""
         is_multi = len(bills) > 1
 
         dialog = tk.Toplevel(self)
@@ -413,7 +754,8 @@ class DueBillsPage(CrudPage):
         dialog.grab_set()
         dialog.resizable(False, False)
 
-        panel_title = f"{student_name} — {len(bills)} Bills Combined" if is_multi else f"{student_name} - {bills[0].bill_number}"
+        class_tag = f" ({student_class})" if student_class else ""
+        panel_title = f"{student_name}{class_tag} — {len(bills)} Bills Combined" if is_multi else f"{student_name}{class_tag} - {bills[0].bill_number}"
         panel = ttk.LabelFrame(dialog, text=panel_title, padding=14)
         panel.pack(fill="both", expand=True, padx=12, pady=12)
 
@@ -426,7 +768,8 @@ class DueBillsPage(CrudPage):
             ttk.Label(panel, text="\n".join(bill_summary_lines), justify="left").grid(row=cur_row, column=0, columnspan=2, sticky="w", pady=(0, 6))
             cur_row += 1
         else:
-            ttk.Label(panel, text=f"Course: {bills[0].course_name}    Period: {bills[0].billing_period}").grid(row=cur_row, column=0, columnspan=2, sticky="w", pady=(0, 8))
+            class_str = f"    Class: {student_class}" if student_class else ""
+            ttk.Label(panel, text=f"Course: {bills[0].course_name}{class_str}    Period: {bills[0].billing_period}").grid(row=cur_row, column=0, columnspan=2, sticky="w", pady=(0, 8))
             cur_row += 1
 
         ttk.Label(panel, text=f"Total balance due: {money(total_remaining)}", style="Card.TLabel").grid(row=cur_row, column=0, columnspan=2, sticky="w", pady=(0, 4))
@@ -500,6 +843,515 @@ class DueBillsPage(CrudPage):
 
         ttk.Button(panel, text="Receive Payment", style="Accent.TButton", command=save_payment).grid(row=fb.row, column=1, sticky="e", pady=(12, 0))
 
+    def is_admin(self) -> bool:
+        role = getattr(getattr(self.app, "session", None), "role", "")
+        return role in ("super_admin", "admin") or self.can("administration.manage")
+
+    def refresh_payments_tab(self):
+        self.all_payments = self.app.services.billing.list_payment_records(limit=1000)
+        self.apply_filters()
+
+    def selected_payment_id(self) -> int:
+        sel = self.payment_tree.selection()
+        if not sel:
+            raise ValueError("Select a payment record first.")
+        return int(self.payment_tree.item(sel[0], "values")[0])
+
+    def open_selected_payment_pdf(self):
+        try:
+            pid = self.selected_payment_id()
+            path = self.app.services.reports.payment_proof_pdf("student", pid)
+            os.startfile(Path(path))
+        except Exception as exc:
+            self.show_error(exc)
+
+    def print_selected_payment_receipt(self):
+        try:
+            pid = self.selected_payment_id()
+            path = self.app.services.reports.payment_proof_pdf("student", pid)
+            os.startfile(Path(path), "print")
+        except Exception as exc:
+            self.show_error(exc)
+
+    def send_selected_payment_whatsapp(self):
+        try:
+            pid = self.selected_payment_id()
+            self.send_whatsapp_payment_receipt(pid)
+        except Exception as exc:
+            self.show_error(exc)
+
+    def delete_payment_from_tab(self):
+        if not self.is_admin():
+            messagebox.showerror("Access Denied", "Only administrators are authorized to delete payment records.", parent=self)
+            return
+        sel = self.payment_tree.selection()
+        if not sel:
+            messagebox.showwarning("Select Payment", "Please select a payment record to delete from the list.", parent=self)
+            return
+        item = self.payment_tree.item(sel[0])
+        txn_id = int(item["values"][0])
+        date_str = str(item["values"][1])
+        student_name = str(item["values"][2])
+        part_str = str(item["values"][4])
+        paid_str = str(item["values"][5])
+        disc_str = str(item["values"][6])
+        receipt_str = str(item["values"][9])
+
+        confirm_msg = (
+            f"⚠️ ARE YOU SURE YOU WANT TO DELETE THIS PAYMENT RECORD?\n\n"
+            f"• Payment Record ID: #{txn_id}\n"
+            f"• Date: {date_str}\n"
+            f"• Student: {student_name}\n"
+            f"• Paid Amount: {paid_str}\n"
+            f"• Discount: {disc_str}\n"
+            f"• Receipt #: {receipt_str}\n"
+            f"• Particular: {part_str}\n\n"
+            f"Deleting this payment record will:\n"
+            f"1. Reverse this payment amount and restore the balance on the associated due bill(s).\n"
+            f"2. Reverse the credit entry from the cash/bank account ledger.\n"
+            f"3. Restore the student's overdue credit dues.\n"
+            f"4. Log this event in the system administrative audit log.\n\n"
+            f"This action CANNOT be undone. Proceed?"
+        )
+        if not messagebox.askyesno("Confirm Delete Payment (Admin Access)", confirm_msg, icon="warning", parent=self):
+            return
+
+        try:
+            actor = getattr(self.app.session, "username", "admin")
+            actor_id = getattr(self.app.session, "user_id", None)
+            actor_role = getattr(self.app.session, "role", "admin")
+            res = self.app.services.billing.delete_payment(
+                transaction_id=txn_id,
+                actor_user_id=actor_id,
+                actor_username=actor,
+                actor_role=actor_role,
+            )
+            self.app.refresh_all()
+            messagebox.showinfo(
+                "Payment Deleted",
+                f"Payment record #{txn_id} was successfully deleted.\n\n"
+                f"• Reverted Payment: Rs. {res['reverted_payment']:,.2f}\n"
+                f"• Reverted Discount: Rs. {res['reverted_discount']:,.2f}\n"
+                f"Bills and financial ledgers have been updated.",
+                parent=self,
+            )
+        except Exception as err:
+            self.show_error(err)
+
+    def delete_selected_bill(self):
+        if not self.is_admin():
+            messagebox.showerror("Access Denied", "Only administrators are authorized to delete bills.", parent=self)
+            return
+        try:
+            bill = self.selected_bill()
+        except Exception:
+            messagebox.showinfo("Selection Required", "Please select a bill to delete.", parent=self)
+            return
+
+        is_paid = bill.paid_amount > Decimal("0")
+        if is_paid:
+            msg = (
+                f"⚠️ ADMINISTRATOR WARNING: DELETE PAID BILL\n\n"
+                f"Bill #{bill.bill_number} for {bill.student_name} has recorded payments of Rs. {bill.paid_amount:,.2f}!\n\n"
+                f"Deleting this bill will automatically:\n"
+                f"• Permanently delete the bill and its line items\n"
+                f"• Revert and remove all associated payment transactions\n"
+                f"• Reverse matching General Ledger entries\n"
+                f"• Recalculate student account balances\n\n"
+                f"Are you sure you want to permanently delete this PAID bill?"
+            )
+        else:
+            msg = f"Are you sure you want to permanently delete unpaid bill #{bill.bill_number} for {bill.student_name}?"
+
+        if not messagebox.askyesno("Confirm Delete Bill", msg, icon="warning", parent=self):
+            return
+
+        try:
+            user = getattr(self.app, "current_user", None)
+            role = getattr(user, "role", "admin") if user else "admin"
+            username = getattr(user, "username", "admin") if user else "admin"
+            uid = getattr(user, "user_id", None) if user else None
+            res = self.app.services.billing.delete_bill(
+                bill_id=bill.id,
+                actor_user_id=uid,
+                actor_username=username,
+                actor_role=role,
+                force_paid=True,
+            )
+            self.refresh()
+            rev_info = f"\nReverted {len(res.get('reverted_payments', []))} payment transaction(s)." if is_paid else ""
+            messagebox.showinfo("Deleted", f"Bill #{bill.bill_number} was successfully deleted.{rev_info}", parent=self)
+        except Exception as err:
+            messagebox.showerror("Error", str(err), parent=self)
+
+    def open_bill_payments(self):
+        try:
+            bill = self.selected_bill()
+        except Exception as exc:
+            self.show_error(exc)
+            return
+
+        payments = self.app.services.billing.get_payments_for_bill(bill.id)
+
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Payment Records — Bill {bill.bill_number} ({bill.student_name})")
+        dialog.geometry("820x520")
+        dialog.minsize(700, 420)
+        dialog.transient(self.winfo_toplevel())
+        dialog.grab_set()
+
+        top = ttk.Frame(dialog, padding=14)
+        top.pack(fill="both", expand=True)
+
+        # Header info
+        hdr = ttk.Frame(top)
+        hdr.pack(fill="x", pady=(0, 8))
+        ttk.Label(
+            hdr,
+            text=f"💳 Payment Records for Bill: {bill.bill_number}",
+            font=("Segoe UI", 12, "bold"),
+            foreground="#102A43",
+        ).pack(anchor="w")
+        class_str = f"  |  Class: {getattr(bill, 'class_name', '')}" if getattr(bill, "class_name", "") else ""
+        sub_text = (
+            f"Student: {bill.student_name}{class_str}  |  Course: {bill.course_name}  |  Period: {bill.billing_period}\n"
+            f"Total Bill: {money(bill.total_amount)}  |  Paid: {money(bill.paid_amount)}  |  "
+            f"Balance Due: {money(max(Decimal('0'), bill.total_amount - bill.paid_amount))}  |  Status: {bill.status}"
+        )
+        ttk.Label(hdr, text=sub_text, font=("Segoe UI", 9), foreground="#334155").pack(anchor="w", pady=(2, 0))
+
+        # Payments table
+        tree_area = ttk.Frame(top)
+        tree_area.pack(fill="both", expand=True, pady=6)
+        pay_tree = ttk.Treeview(
+            tree_area,
+            columns=("id", "date", "receipt", "paid", "discount", "method", "account", "particular"),
+            show="headings",
+        )
+        for col_id, col_name, col_w in [
+            ("id", "ID", 45),
+            ("date", "Date", 90),
+            ("receipt", "Receipt #", 95),
+            ("paid", "Paid (Rs.)", 90),
+            ("discount", "Discount", 80),
+            ("method", "Method", 80),
+            ("account", "Account", 130),
+            ("particular", "Particular / Remarks", 200),
+        ]:
+            pay_tree.heading(col_id, text=col_name)
+            pay_tree.column(col_id, width=col_w, anchor="w")
+
+        p_scroll = ttk.Scrollbar(tree_area, orient="vertical", command=pay_tree.yview)
+        pay_tree.configure(yscrollcommand=p_scroll.set)
+        pay_tree.pack(side="left", fill="both", expand=True)
+        p_scroll.pack(side="right", fill="y")
+
+        def populate_tree():
+            for item in pay_tree.get_children():
+                pay_tree.delete(item)
+            nonlocal payments
+            payments = self.app.services.billing.get_payments_for_bill(bill.id)
+            for p in payments:
+                pay_tree.insert(
+                    "", "end",
+                    values=(
+                        p["id"],
+                        p.get("transaction_date") or "—",
+                        p.get("receipt_no") or "—",
+                        money(Decimal(str(p.get("payment_amount") or 0))),
+                        money(Decimal(str(p.get("discount_amount") or 0))),
+                        p.get("payment_method") or "—",
+                        p.get("account_name") or "—",
+                        p.get("particular") or p.get("remarks") or "—",
+                    ),
+                )
+
+        populate_tree()
+
+        # Action bar
+        btn_bar = ttk.Frame(top, padding=(0, 8))
+        btn_bar.pack(fill="x", side="bottom")
+
+        def delete_selected_payment():
+            if not self.is_admin():
+                messagebox.showerror("Access Denied", "Only administrators are authorized to delete payment records.", parent=dialog)
+                return
+            sel = pay_tree.selection()
+            if not sel:
+                messagebox.showwarning("Select Payment", "Please select a payment record to delete.", parent=dialog)
+                return
+            item = pay_tree.item(sel[0])
+            txn_id = int(item["values"][0])
+            paid_str = str(item["values"][3])
+            receipt_str = str(item["values"][2])
+
+            confirm_msg = (
+                f"⚠️ ARE YOU SURE YOU WANT TO DELETE THIS PAYMENT RECORD?\n\n"
+                f"• Payment Record ID: #{txn_id}\n"
+                f"• Amount: {paid_str}\n"
+                f"• Receipt #: {receipt_str}\n"
+                f"• Target Bill: {bill.bill_number}\n\n"
+                f"Deleting this payment will:\n"
+                f"1. Reverse this payment amount and restore the balance on Bill {bill.bill_number}.\n"
+                f"2. Reverse the corresponding credit entry in the cash/bank account ledger.\n"
+                f"3. Restore the student's overdue balance.\n"
+                f"4. Log this administrative event in the audit trail.\n\n"
+                f"This action CANNOT be undone. Proceed?"
+            )
+            if not messagebox.askyesno("Confirm Delete Payment (Admin Access)", confirm_msg, icon="warning", parent=dialog):
+                return
+
+            try:
+                actor = getattr(self.app.session, "username", "admin")
+                actor_id = getattr(self.app.session, "user_id", None)
+                actor_role = getattr(self.app.session, "role", "admin")
+                res = self.app.services.billing.delete_payment(
+                    transaction_id=txn_id,
+                    actor_user_id=actor_id,
+                    actor_username=actor,
+                    actor_role=actor_role,
+                )
+                self.app.refresh_all()
+                dialog.destroy()
+                messagebox.showinfo(
+                    "Payment Deleted",
+                    f"Payment record #{txn_id} was successfully deleted.\n\n"
+                    f"• Reverted Payment: Rs. {res['reverted_payment']:,.2f}\n"
+                    f"• Reverted Discount: Rs. {res['reverted_discount']:,.2f}\n"
+                    f"Bill and financial ledgers have been updated.",
+                    parent=self,
+                )
+            except Exception as err:
+                messagebox.showerror("Error Deleting Payment", str(err), parent=dialog)
+
+        def open_receipt_pdf():
+            sel = pay_tree.selection()
+            if not sel:
+                messagebox.showwarning("Select Payment", "Please select a payment record first.", parent=dialog)
+                return
+            txn_id = int(pay_tree.item(sel[0])["values"][0])
+            try:
+                path = self.app.services.reports.payment_proof_pdf("student", txn_id)
+                os.startfile(Path(path))
+            except Exception as e:
+                messagebox.showerror("Error", str(e), parent=dialog)
+
+        def print_receipt():
+            sel = pay_tree.selection()
+            if not sel:
+                messagebox.showwarning("Select Payment", "Please select a payment record first.", parent=dialog)
+                return
+            txn_id = int(pay_tree.item(sel[0])["values"][0])
+            try:
+                path = self.app.services.reports.payment_proof_pdf("student", txn_id)
+                os.startfile(Path(path), "print")
+            except Exception as e:
+                messagebox.showerror("Error", str(e), parent=dialog)
+
+        if self.is_admin():
+            del_btn = ttk.Button(btn_bar, text="🗑️ Delete Payment Record", command=delete_selected_payment)
+            del_btn.pack(side="left", padx=3)
+        else:
+            del_btn = ttk.Button(btn_bar, text="🔒 Delete Payment (Admin Only)", state="disabled")
+            del_btn.pack(side="left", padx=3)
+
+        ttk.Button(btn_bar, text="📄 Open Receipt PDF", command=open_receipt_pdf).pack(side="left", padx=3)
+        ttk.Button(btn_bar, text="🖨️ Print Receipt", command=print_receipt).pack(side="left", padx=3)
+        ttk.Button(btn_bar, text="Close", command=dialog.destroy).pack(side="right", padx=3)
+
+    def open_edit_bill(self):
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("Select Bill", "Please select a bill from the list to edit.", parent=self)
+            return
+        item_id = selection[0]
+        values = self.tree.item(item_id, "values")
+        bill_id = int(values[0])
+        bill = self.app.services.billing.repository.get(bill_id)
+        if not bill:
+            messagebox.showerror("Error", f"Bill #{bill_id} was not found.", parent=self)
+            return
+
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Edit Due Bill #{bill.id} ({bill.bill_number})")
+        dialog.geometry("620x700")
+        dialog.minsize(540, 560)
+        dialog.transient(self.winfo_toplevel())
+        dialog.grab_set()
+
+        top = ttk.Frame(dialog, padding=16)
+        top.pack(fill="both", expand=True)
+
+        ttk.Label(top, text=f"Edit Bill: {bill.bill_number}", font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(0, 4))
+        class_str = getattr(bill, "class_name", "") or "—"
+        ttk.Label(top, text=f"Student: {bill.student_name}  |  Course: {bill.course_name}  |  Class: {class_str}", foreground="#475569").pack(anchor="w", pady=(0, 10))
+
+        form_frame = ttk.Frame(top)
+        form_frame.pack(fill="x")
+
+        period_var = tk.StringVar(value=bill.billing_period)
+        issue_var = tk.StringVar(value=bill.issue_date)
+        due_var = tk.StringVar(value=bill.due_date)
+        subtotal_var = tk.StringVar(value=f"{bill.subtotal:.2f}")
+        discount_var = tk.StringVar(value=f"{bill.discount:.2f}")
+        remarks_var = tk.StringVar(value=getattr(bill, "remarks", "") or "")
+
+        fb = FormBuilder(form_frame)
+        fb.entry("Billing Period (YYYY/MM) *", period_var)
+        fb.entry("Issue Date (YYYY/MM/DD) *", issue_var)
+        fb.entry("Due Date (YYYY/MM/DD) *", due_var)
+        fb.entry("Subtotal / Fee (Rs.) *", subtotal_var)
+        fb.entry("Discount (Rs.)", discount_var)
+        fb.entry("Remarks", remarks_var)
+
+        calc_box = ttk.LabelFrame(top, text="Payment & Balance Preview", padding=10)
+        calc_box.pack(fill="x", pady=8)
+
+        total_lbl = ttk.Label(calc_box, text="", font=("Segoe UI", 10, "bold"))
+        total_lbl.pack(anchor="w")
+        paid_lbl = ttk.Label(calc_box, text=f"Paid Amount: {money(bill.paid_amount)}", foreground="#059669")
+        paid_lbl.pack(anchor="w")
+        balance_lbl = ttk.Label(calc_box, text="", font=("Segoe UI", 10, "bold"))
+        balance_lbl.pack(anchor="w")
+        status_lbl = ttk.Label(calc_box, text="", font=("Segoe UI", 9))
+        status_lbl.pack(anchor="w")
+
+        def update_calc(*_):
+            try:
+                sub = parse_amount(subtotal_var.get() or "0")
+                disc = parse_amount(discount_var.get() or "0")
+                tot = max(Decimal("0"), sub - disc)
+                bal = max(Decimal("0"), tot - bill.paid_amount)
+                if bill.paid_amount >= tot and tot > 0:
+                    st = "Paid"
+                    clr = "#059669"
+                elif bill.paid_amount > 0:
+                    st = "Partially Paid"
+                    clr = "#D97706"
+                else:
+                    st = "Due"
+                    clr = "#DC2626"
+
+                total_lbl.config(text=f"Total Bill Amount: {money(tot)}")
+                balance_lbl.config(text=f"Remaining Balance Due: {money(bal)}", foreground=clr)
+                status_lbl.config(text=f"Updated Status will be: {st}", foreground=clr)
+            except Exception:
+                pass
+
+        subtotal_var.trace_add("write", update_calc)
+        discount_var.trace_add("write", update_calc)
+        update_calc()
+
+        # Recorded Payments Subpanel
+        pay_records = self.app.services.billing.get_payments_for_bill(bill.id)
+        if pay_records:
+            p_box = ttk.LabelFrame(top, text=f"Recorded Payments on this Bill ({len(pay_records)})", padding=6)
+            p_box.pack(fill="both", expand=True, pady=(4, 8))
+            p_cols = [("id", "ID", 45), ("date", "Date", 85), ("receipt", "Receipt", 85), ("paid", "Paid (Rs.)", 85), ("method", "Method", 75), ("account", "Account", 110)]
+            p_tree = self.make_tree(p_box, p_cols, height=min(4, len(pay_records)))
+            for pr in pay_records:
+                p_tree.insert("", "end", values=(pr["id"], pr.get("transaction_date") or "—", pr.get("receipt_no") or "—", money(Decimal(str(pr.get("payment_amount") or 0))), pr.get("payment_method") or "—", pr.get("account_name") or "—"))
+            if self.is_admin():
+                p_bar = ttk.Frame(p_box)
+                p_bar.pack(fill="x", pady=(4, 0))
+                def delete_pay_from_edit():
+                    sel = p_tree.selection()
+                    if not sel:
+                        messagebox.showwarning("Select Payment", "Please select a payment record from the list above.", parent=dialog)
+                        return
+                    txn_id = int(p_tree.item(sel[0])["values"][0])
+                    paid_val = str(p_tree.item(sel[0])["values"][3])
+                    if not messagebox.askyesno(
+                        "Confirm Delete Payment (Admin Access)",
+                        f"Are you sure you want to delete payment #{txn_id} of {paid_val}?\n\n"
+                        f"This will revert the paid amount on Bill {bill.bill_number}, reverse the ledger credit entry, and restore student dues.\n\n"
+                        f"Proceed?",
+                        icon="warning",
+                        parent=dialog,
+                    ):
+                        return
+                    try:
+                        actor = getattr(self.app.session, "username", "admin")
+                        actor_id = getattr(self.app.session, "user_id", None)
+                        actor_role = getattr(self.app.session, "role", "admin")
+                        self.app.services.billing.delete_payment(
+                            transaction_id=txn_id,
+                            actor_user_id=actor_id,
+                            actor_username=actor,
+                            actor_role=actor_role,
+                        )
+                        dialog.destroy()
+                        self.app.refresh_all()
+                        messagebox.showinfo("Payment Deleted", f"Payment #{txn_id} deleted and bill balance restored.", parent=self)
+                    except Exception as err:
+                        messagebox.showerror("Error", str(err), parent=dialog)
+                ttk.Button(p_bar, text="🗑️ Delete Selected Payment", command=delete_pay_from_edit).pack(side="left")
+
+        btn_row = ttk.Frame(top)
+        btn_row.pack(fill="x", pady=(10, 0))
+
+        def save_changes():
+            try:
+                sub = parse_amount(subtotal_var.get() or "0", "Subtotal")
+                disc = parse_amount(discount_var.get() or "0", "Discount")
+                self.app.services.billing.update_bill(
+                    bill_id=bill.id,
+                    billing_period=period_var.get().strip(),
+                    issue_date=issue_var.get().strip(),
+                    due_date=due_var.get().strip(),
+                    subtotal=sub,
+                    discount=disc,
+                    remarks=remarks_var.get().strip(),
+                )
+                dialog.destroy()
+                self.refresh()
+                messagebox.showinfo("Success", f"Bill #{bill.id} updated successfully!", parent=self)
+            except Exception as exc:
+                messagebox.showerror("Update Error", str(exc), parent=dialog)
+
+        ttk.Button(btn_row, text="Cancel", command=dialog.destroy).pack(side="left")
+
+        if self.is_admin():
+            def delete_bill_action():
+                is_paid = bill.paid_amount > Decimal("0")
+                if is_paid:
+                    msg = (
+                        f"⚠️ ADMINISTRATOR WARNING: DELETE PAID BILL\n\n"
+                        f"Bill #{bill.bill_number} has recorded payments of Rs. {bill.paid_amount:,.2f}!\n\n"
+                        f"Deleting this bill will automatically:\n"
+                        f"• Permanently delete the bill and its line items\n"
+                        f"• Revert and remove all associated payment transactions\n"
+                        f"• Reverse matching General Ledger entries\n"
+                        f"• Recalculate student account balances\n\n"
+                        f"Are you sure you want to permanently delete this PAID bill?"
+                    )
+                else:
+                    msg = f"Are you sure you want to permanently delete unpaid due bill #{bill.bill_number}?"
+
+                if not messagebox.askyesno("Confirm Delete Bill", msg, icon="warning", parent=dialog):
+                    return
+                try:
+                    user = getattr(self.app, "current_user", None)
+                    role = getattr(user, "role", "admin") if user else "admin"
+                    username = getattr(user, "username", "admin") if user else "admin"
+                    uid = getattr(user, "user_id", None) if user else None
+                    res = self.app.services.billing.delete_bill(
+                        bill_id=bill.id,
+                        actor_user_id=uid,
+                        actor_username=username,
+                        actor_role=role,
+                        force_paid=True,
+                    )
+                    dialog.destroy()
+                    self.refresh()
+                    rev_info = f"\nReverted {len(res.get('reverted_payments', []))} payment transaction(s)." if is_paid else ""
+                    messagebox.showinfo("Deleted", f"Bill #{bill.bill_number} was successfully deleted.{rev_info}", parent=self)
+                except Exception as err:
+                    messagebox.showerror("Error", str(err), parent=dialog)
+            ttk.Button(btn_row, text="🗑️ Delete Bill", command=delete_bill_action).pack(side="left", padx=(6, 0))
+
+        ttk.Button(btn_row, text="💾 Save Changes", style="Accent.TButton", command=save_changes).pack(side="right")
+
     def create_pdf(self):
         try:
             path=self.app.services.billing.create_pdf(self.selected_bill());os.startfile(path)
@@ -570,7 +1422,8 @@ class DueBillsPage(CrudPage):
         from tkinter import scrolledtext
 
         dialog = tk.Toplevel(self)
-        dialog.title(f"WhatsApp Due Bill - {data['student_name']} ({data['bill_number']})")
+        class_str = f" [{data['class_name']}]" if data.get("class_name") else ""
+        dialog.title(f"WhatsApp Due Bill - {data['student_name']}{class_str} ({data['bill_number']})")
         dialog.geometry("640x560")
         dialog.minsize(560, 480)
         dialog.transient(self.winfo_toplevel())
@@ -730,7 +1583,9 @@ class DueBillsPage(CrudPage):
         dialog=tk.Toplevel(self);dialog.title("Generate Bills for Multiple Students");dialog.geometry("840x700");dialog.minsize(760,620);dialog.transient(self.winfo_toplevel());dialog.grab_set()
         top=ttk.Frame(dialog,padding=10);top.pack(fill="x")
         start_month=tk.StringVar(value=self.vars["period"].get());end_month=tk.StringVar(value=self.vars["period"].get());issue=tk.StringVar(value=self.vars["issue"].get());due=tk.StringVar(value=self.vars["due"].get());remarks=tk.StringVar()
+        separate_bills = tk.BooleanVar(value=True)
         fb=FormBuilder(top);fb.entry("Start Month (YYYY/MM) *",start_month);fb.entry("End Month (YYYY/MM) *",end_month);fb.entry("Issue Date *",issue);fb.entry("Due Date *",due);fb.entry("Remarks",remarks)
+        fb.check("Bill Format", separate_bills, "Generate separate bill for each month")
         ttk.Label(dialog,text="Select students/enrollments (Ctrl or Shift for multiple selection)").pack(anchor="w",padx=10)
         area=ttk.Frame(dialog,padding=(10,4));area.pack(fill="both",expand=True)
         tree=ttk.Treeview(area,columns=("id","student","course","start","fee"),show="headings",selectmode="extended")
@@ -745,9 +1600,14 @@ class DueBillsPage(CrudPage):
         def generate_batch():
             try:
                 ids=[int(tree.item(item,"values")[0]) for item in tree.selection()]
-                results=self.app.services.billing.generate_combined_month_range(ids,start_month.get(),end_month.get(),validate_date(issue.get(),"Issue date"),validate_date(due.get(),"Due date"),remarks.get())
+                if separate_bills.get():
+                    results=self.app.services.billing.generate_month_range(ids,start_month.get(),end_month.get(),validate_date(issue.get(),"Issue date"),validate_date(due.get(),"Due date"),remarks.get())
+                    label_type="Separate monthly student bills"
+                else:
+                    results=self.app.services.billing.generate_combined_month_range(ids,start_month.get(),end_month.get(),validate_date(issue.get(),"Issue date"),validate_date(due.get(),"Due date"),remarks.get())
+                    label_type="Combined student bills"
                 created=sum(1 for result in results if result.created);existing=len(results)-created;not_started=len(ids)-len(results)
-                dialog.destroy();self.refresh();messagebox.showinfo("Batch Complete",f"Combined student bills generated: {created}\nAlready billed or paid (skipped): {existing}\nNot yet enrolled for selected months (skipped): {not_started}\nStudents/enrollments selected: {len(ids)}",parent=self)
+                dialog.destroy();self.refresh();messagebox.showinfo("Batch Complete",f"{label_type} generated: {created}\nAlready billed or paid (skipped): {existing}\nNot yet enrolled for selected months (skipped): {not_started}\nStudents/enrollments selected: {len(ids)}",parent=self)
             except Exception as exc:messagebox.showerror("Batch Error",str(exc),parent=dialog)
         ttk.Button(buttons,text="Generate Selected Bills",command=generate_batch).pack(side="right")
         buttons.pack_configure(side="bottom",before=area,pady=(4,0))

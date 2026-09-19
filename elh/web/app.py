@@ -1,12 +1,17 @@
 from datetime import datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
+import json
+import logging
+import os
 from pathlib import Path
-from typing import Any, Literal
+import re
+from typing import Any, Literal, Optional
 
 import nepali_datetime as nepali
 
-from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
+from fastapi import Body, Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
+logger = logging.getLogger("elh.web.app")
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -18,6 +23,7 @@ from elh.core.settings import SettingsService
 from elh.core.validation import current_month, validate_date, validate_month
 from elh.infrastructure import create_database
 from elh.models import CertificateIssueRequest, Student, UserSession
+from elh.models.academics import StudentSubject, Subject
 from elh.services.assistant import InstituteAssistant
 from elh.services.auth import AuthService, ROLES
 from elh.services.container import ServiceContainer
@@ -103,6 +109,7 @@ class StaffInput(BaseModel):
     email: str = ""
     qualification: str = ""
     subject: str = ""
+    subject_ids: list[int] = Field(default_factory=list)
     joined_date: str
     salary_type: str = "Monthly Salary"
     basic_salary: float = 0
@@ -142,6 +149,28 @@ class BillGenerationInput(BaseModel):
     issue_date: str
     due_date: str
     remarks: str = ""
+    allow_future: bool = False
+    combine: bool = False
+
+
+class BillUpdateInput(BaseModel):
+    billing_period: str
+    issue_date: str
+    due_date: str
+    subtotal: float = Field(ge=0)
+    discount: float = Field(ge=0, default=0.0)
+    remarks: str = ""
+
+
+class AdvancePaymentInput(BaseModel):
+    student_id: int
+    amount: float = Field(gt=0)
+    payment_date: str
+    account_id: int
+    payment_method: str = "Cash"
+    receipt_no: str = ""
+    remarks: str = ""
+
 
 
 class BillPaymentInput(BaseModel):
@@ -163,6 +192,17 @@ class MultiBillPaymentInput(BaseModel):
     payment_method: str = "Cash"
     receipt_no: str = ""
     remarks: str = ""
+
+
+class PrintPosByClassInput(BaseModel):
+    class_name: str = ""
+    mode: str = "bills"
+
+
+class PrintPosBatchInput(BaseModel):
+    bill_ids: list[int] = Field(default_factory=list)
+    student_ids: list[int] = Field(default_factory=list)
+    mode: str = "bills"
 
 
 class AutoBillingRunInput(BaseModel):
@@ -332,11 +372,60 @@ class RoutinePlanInput(BaseModel):
     archive_source: bool = True
 
 
+class SubjectInput(BaseModel):
+    subject_code: str = Field(min_length=1, max_length=50)
+    subject_name: str = Field(min_length=1, max_length=150)
+    subject_type: Literal["Compulsory", "Optional", "Elective", "Vocational"] = "Optional"
+    class_level_id: int | None = None
+    class_name: str = ""
+    status: Literal["Active", "Inactive"] = "Active"
+    remarks: str = ""
+
+
+class StudentSubjectAssignInput(BaseModel):
+    subject_id: int
+    enrollment_type: Literal["Compulsory", "Optional", "Elective", "Vocational"] = "Optional"
+    assigned_date: str = ""
+    remarks: str = ""
+
+
+class BatchAssignSubjectInput(BaseModel):
+    student_ids: list[int] = Field(min_length=1)
+    subject_id: int
+    enrollment_type: Literal["Compulsory", "Optional", "Elective", "Vocational"] = "Optional"
+    assigned_date: str = ""
+    remarks: str = ""
+
+
+class TeacherSubjectInput(BaseModel):
+    subject_id: int
+    remarks: str = ""
+
+
+class TeacherSubjectAssignInput(BaseModel):
+    subject_ids: list[int] = Field(default_factory=list)
+
+
+class BulkRoutineEditInput(BaseModel):
+    routine_ids: list[int] = Field(min_length=1)
+    subject_id: int | None = None
+    subject_name: str | None = None
+    teacher_id: int | None = None
+    clear_teacher: bool = False
+    course_id: int | None = None
+    clear_course: bool = False
+    start_time: str | None = None
+    end_time: str | None = None
+    status: str | None = None
+    remarks: str | None = None
+
+
 class RoutinePeriodInput(BaseModel):
     class_name: str = Field(min_length=1, max_length=100)
     day_of_week: Literal["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
     period_label: str = Field(min_length=1, max_length=50)
-    subject_name: str = Field(min_length=1, max_length=150)
+    subject_name: str = ""
+    subject_id: int | None = None
     class_level_id: int
     teacher_id: int | None = None
     course_id: int | None = None
@@ -381,7 +470,45 @@ class SalaryPayoutInput(BaseModel):
     paid_from_account_id: int
     payment_method: str = "Bank"
     voucher_no: str = ""
+    status: str = "Paid"
     remarks: str = ""
+
+
+class SalaryPayoutUpdateInput(BaseModel):
+    basic_salary: float = Field(ge=0)
+    extra_payment: float = 0
+    bonus: float = 0
+    allowance: float = 0
+    advance_deduction: float = 0
+    other_deduction: float = 0
+    attendance_days: int = 0
+    working_hours: float = 0
+    class_count: int = 0
+    payment_date: str
+    paid_from_account_id: int
+    payment_method: str = "Bank"
+    voucher_no: str = ""
+    status: str = "Paid"
+    remarks: str = ""
+
+
+class GeneratePayrollMonthInput(BaseModel):
+    salary_month: str
+    paid_from_account_id: int
+    payment_date: str
+    payment_method: str = "Bank"
+    voucher_no: str = ""
+    status: str = "Draft"
+    overwrite: bool = True
+    remarks: str = ""
+
+
+class DisbursePayrollMonthInput(BaseModel):
+    salary_month: str
+    paid_from_account_id: int
+    payment_date: str
+    payment_method: str = "Bank"
+    voucher_no: str = ""
 
 
 class SettingsUpdateInput(BaseModel):
@@ -467,7 +594,10 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
     app.state.auth = auth
     app.state.token_manager = token_manager
     app.add_middleware(SecurityHeadersMiddleware)
-    static_dir = ROOT_DIR / "web"
+    web_dist_dir = ROOT_DIR / "web_dist"
+    use_modern = (web_dist_dir / "index.html").exists() and os.environ.get("ELH_USE_MODERN_WEB", "").lower() in ("1", "true")
+    static_dir = web_dist_dir if use_modern else (ROOT_DIR / "web")
+    assets_dir = (web_dist_dir / "assets") if (use_modern and (web_dist_dir / "assets").exists()) else static_dir
 
     def records(rows):
         return [dict(row) for row in rows]
@@ -543,6 +673,7 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
         return dependency
 
     @app.post("/api/auth/login")
+    @app.post("/auth/login")
     def login(payload: LoginRequest, request: Request, response: Response):
         client_ip = request.client.host if request.client else "127.0.0.1"
         rate_key = f"{client_ip}:{payload.username.strip().lower()}"
@@ -757,6 +888,8 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
         return {"ok": True, "message": "Password changed successfully."}
 
     @app.get("/api/auth/me")
+    @app.get("/api/me")
+    @app.get("/me")
     def me(user: UserSession = Depends(session)):
         return {
             "id": user.user_id,
@@ -1600,6 +1733,9 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
                 if t_lower in teacher_name_to_id:
                     assigned_ids.append(teacher_name_to_id[t_lower])
 
+            if assigned_ids and not tc.get("teacher_id"):
+                tc["teacher_id"] = assigned_ids[0]
+
             # Check if there is an accepted proxy for this routine today
             if tc["id"] in proxy_by_routine:
                 pr = proxy_by_routine[tc["id"]]
@@ -1830,16 +1966,45 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
         )
         return {"id": school_id}
 
+    @app.put("/api/schools/{school_id}")
+    def update_school(school_id: int, payload: SchoolInput, _user=Depends(require("master_data.manage"))):
+        existing = db.query_one("SELECT * FROM schools WHERE id=?", (school_id,))
+        if not existing:
+            raise HTTPException(status_code=404, detail="School not found.")
+        db.execute(
+            "UPDATE schools SET school_name=?,emis_id=?,address=?,contact=?,status=?,remarks=? WHERE id=?",
+            (payload.school_name.strip(), payload.emis_id.strip() or None, payload.address.strip(),
+             payload.contact.strip(), payload.status, payload.remarks.strip(), school_id),
+        )
+        return {"ok": True}
+
+    @app.get("/api/nepali-date/today")
+    def get_nepali_today():
+        today = nepali.date.today()
+        month_names = ["Baisakh", "Jestha", "Ashadh", "Shrawan", "Bhadra", "Ashwin", "Kartik", "Mangsir", "Poush", "Magh", "Falgun", "Chaitra"]
+        return {
+            "today": today.strftime("%Y/%m/%d"),
+            "year": today.year,
+            "month": today.month,
+            "day": today.day,
+            "month_name": month_names[today.month - 1],
+            "day_name": today.to_datetime_date().strftime("%A"),
+        }
+
     @app.get("/api/lookups")
     def lookups(_user=Depends(session)):
+        today = nepali.date.today()
         return {
             "schools": records(db.query("SELECT id,school_name FROM schools WHERE status='Active' ORDER BY school_name")),
             "classes": records(db.query("SELECT id,level_name FROM class_levels WHERE status='Active' ORDER BY level_name")),
             "accounts": records(db.query("SELECT id,account_name,account_type FROM accounts WHERE status='Active' ORDER BY account_name")),
             "grades": records(db.query("SELECT id,short_name,grade_name FROM grades WHERE status='Active' ORDER BY short_name")),
-            "teachers": records(db.query("SELECT id,teacher_name,staff_type,basic_salary,salary_type,contact,email FROM teachers WHERE status='Active' ORDER BY teacher_name")),
+            "teachers": records(db.query("SELECT id,teacher_name,staff_type,basic_salary,salary_type,contact,email,subject FROM teachers WHERE status='Active' ORDER BY teacher_name")),
             "students": records(db.query("SELECT id,student_name,contact,'' AS email,class_name FROM students WHERE status<>'Archived' ORDER BY student_name")),
+            "subjects": records(db.query("SELECT id,subject_code,subject_name,subject_type,class_level_id,class_name FROM subjects WHERE status='Active' ORDER BY subject_name")),
             "roles": list(ROLES),
+            "today_bs": today.strftime("%Y/%m/%d"),
+            "current_month_bs": today.strftime("%Y/%m"),
         }
 
     @app.get("/api/enrollments")
@@ -1883,6 +2048,18 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
     @app.get("/api/attendance/present-today")
     def attendance_present_today(_user=Depends(require("devices.manage"))):
         return records(services.attendance.students_present_today())
+
+    @app.get("/api/attendance/today")
+    def attendance_today(_user=Depends(require_any("devices.manage", "reports.view", "dashboard.view"))):
+        present = records(services.attendance.students_present_today())
+        absent = records(services.attendance.students_absent_today())
+        return {
+            "total_present": len(present),
+            "total_absent": len(absent),
+            "teachers_present": 0,
+            "unassigned_punches": 0,
+            "records": present,
+        }
 
     @app.get("/api/attendance/absent-today")
     def attendance_absent_today(_user=Depends(require("devices.manage"))):
@@ -1944,21 +2121,346 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
         return services.attendance_poller.status()
 
     @app.get("/api/academic-calendar")
-    def academic_calendar(month: str = "", _user=Depends(require("devices.manage"))):
-        selected_month = month or nepali.date.today().strftime("%Y/%m")
+    def academic_calendar(
+        month: str = "",
+        student_id: int | None = None,
+        teacher_id: int | None = None,
+        user: UserSession = Depends(session),
+    ):
+        if not (
+            auth.has_permission(user, "devices.manage")
+            or auth.has_permission(user, "dashboard.view")
+            or auth.has_permission(user, "portal.student")
+            or auth.has_permission(user, "portal.staff")
+            or auth.has_permission(user, "master_data.manage")
+        ):
+            raise HTTPException(status_code=403, detail="You do not have permission to view the academic calendar.")
+
+        selected_month = month.strip() if month else nepali.date.today().strftime("%Y/%m")
+        try:
+            selected_month = validate_month(selected_month, "Calendar month")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        is_student = user.role == "student" or (user.student_id and not auth.has_permission(user, "students.manage"))
+        is_teacher = user.role in ("staff", "teacher") or (user.teacher_id and not auth.has_permission(user, "administration.manage") and not auth.has_permission(user, "students.manage"))
+
+        if is_student:
+            target_student_id = user.student_id
+            if not target_student_id:
+                u_row = db.query_one("SELECT student_id FROM app_users WHERE id=?", (user.user_id,))
+                if u_row and u_row["student_id"]:
+                    target_student_id = u_row["student_id"]
+            target_teacher_id = None
+            role_scope = "student"
+        elif is_teacher:
+            target_student_id = None
+            target_teacher_id = user.teacher_id
+            if not target_teacher_id:
+                u_row = db.query_one("SELECT teacher_id FROM app_users WHERE id=?", (user.user_id,))
+                if u_row and u_row["teacher_id"]:
+                    target_teacher_id = u_row["teacher_id"]
+            role_scope = "teacher"
+        else:
+            target_student_id = student_id
+            target_teacher_id = teacher_id
+            role_scope = "admin"
+
+        days = services.attendance.academic_calendar_month(selected_month)
+        all_events = []
+
+        # 1. Academic calendar events
+        academic_events = records(db.query(
+            "SELECT event.*, c.course_name FROM academic_calendar_events event "
+            "LEFT JOIN courses c ON c.id = event.course_id "
+            "WHERE event.start_date <= ? AND event.end_date >= ? AND (event.status IS NULL OR event.status = 'Active') "
+            "ORDER BY event.start_date, event.id",
+            (f"{selected_month}/99", f"{selected_month}/01"),
+        ))
+        for ev in academic_events:
+            ev_type = ev.get("event_type") or "Event"
+            badge = "holiday" if ev_type in ("Holiday", "Closure") else ("working" if ev_type == "Working Day" else "event")
+            all_events.append({
+                "id": f"acad-{ev['id']}",
+                "event_id": ev["id"],
+                "course_id": ev.get("course_id"),
+                "event_name": ev["event_name"],
+                "event_type": ev_type,
+                "badge_type": badge,
+                "course_name": ev.get("course_name") or "",
+                "start_date": ev["start_date"],
+                "end_date": ev["end_date"],
+                "status": ev.get("status") or "Active",
+                "remarks": ev.get("remarks") or "",
+                "source": "academic",
+            })
+
+        month_like = f"{selected_month}/%"
+
+        # 2. Student Due Bills & Dues (if student role, or admin looking at all or specific student)
+        if target_teacher_id is None:
+            bill_query = (
+                "SELECT b.id, b.bill_number, b.enrollment_id, b.billing_period, b.issue_date, b.due_date, "
+                "b.total_amount, b.paid_amount, (b.total_amount - b.paid_amount) AS balance, b.status, "
+                "c.course_name, s.id AS student_id, s.student_name "
+                "FROM due_bills b "
+                "JOIN enrollments e ON e.id = b.enrollment_id "
+                "JOIN courses c ON c.id = e.course_id "
+                "JOIN students s ON s.id = e.student_id "
+                "WHERE (b.due_date LIKE ? OR b.issue_date LIKE ?) "
+            )
+            bill_params = [month_like, month_like]
+            if target_student_id:
+                bill_query += "AND e.student_id = ? "
+                bill_params.append(target_student_id)
+            bill_query += "ORDER BY b.due_date ASC, b.id ASC"
+
+            bill_rows = records(db.query(bill_query, tuple(bill_params)))
+            for b in bill_rows:
+                bal = float(b["balance"] or 0)
+                tot = float(b["total_amount"] or 0)
+                paid = float(b["paid_amount"] or 0)
+                d_date = b.get("due_date") or ""
+
+                if d_date.startswith(f"{selected_month}/"):
+                    if bal > 0:
+                        name = f"Due: Rs. {bal:,.0f} ({b['course_name']})" if is_student else f"Due: Rs. {bal:,.0f} ({b['student_name']})"
+                        all_events.append({
+                            "id": f"due-{b['id']}",
+                            "event_name": name,
+                            "event_type": "Fee Due",
+                            "badge_type": "due",
+                            "amount": bal,
+                            "total_amount": tot,
+                            "paid_amount": paid,
+                            "person_name": b["student_name"],
+                            "person_type": "student",
+                            "student_id": b["student_id"],
+                            "course_name": b["course_name"],
+                            "reference": b["bill_number"],
+                            "billing_period": b["billing_period"],
+                            "start_date": d_date,
+                            "end_date": d_date,
+                            "status": b["status"],
+                            "remarks": f"Due Bill {b['bill_number']} · Period: {b['billing_period']}",
+                            "source": "bill_due",
+                        })
+                    else:
+                        name = f"Settled: Rs. {tot:,.0f} ({b['course_name']})" if is_student else f"Settled: Rs. {tot:,.0f} ({b['student_name']})"
+                        all_events.append({
+                            "id": f"settled-{b['id']}",
+                            "event_name": name,
+                            "event_type": "Bill Settled",
+                            "badge_type": "settled",
+                            "amount": tot,
+                            "total_amount": tot,
+                            "paid_amount": paid,
+                            "person_name": b["student_name"],
+                            "person_type": "student",
+                            "student_id": b["student_id"],
+                            "course_name": b["course_name"],
+                            "reference": b["bill_number"],
+                            "billing_period": b["billing_period"],
+                            "start_date": d_date,
+                            "end_date": d_date,
+                            "status": "Paid",
+                            "remarks": f"Bill {b['bill_number']} fully paid",
+                            "source": "bill_settled",
+                        })
+
+            # 3. Student Fee Payments / Transactions
+            txn_query = (
+                "SELECT st.id, st.student_id, st.transaction_date, st.transaction_type, st.particular, "
+                "st.payment_amount, st.discount_amount, st.receipt_no, st.payment_method, st.remarks, "
+                "s.student_name "
+                "FROM student_transactions st "
+                "JOIN students s ON s.id = st.student_id "
+                "WHERE st.transaction_date LIKE ? AND st.payment_amount > 0 "
+            )
+            txn_params = [month_like]
+            if target_student_id:
+                txn_query += "AND st.student_id = ? "
+                txn_params.append(target_student_id)
+            txn_query += "ORDER BY st.transaction_date ASC, st.id ASC"
+
+            txn_rows = records(db.query(txn_query, tuple(txn_params)))
+            for st in txn_rows:
+                p_amt = float(st["payment_amount"] or 0)
+                r_no = st.get("receipt_no") or ""
+                name = (f"Paid: Rs. {p_amt:,.0f}" + (f" (#{r_no})" if r_no else "")) if is_student else f"Fee Paid: Rs. {p_amt:,.0f} ({st['student_name']})"
+                all_events.append({
+                    "id": f"txn-{st['id']}",
+                    "event_name": name,
+                    "event_type": "Fee Payment",
+                    "badge_type": "payment",
+                    "amount": p_amt,
+                    "person_name": st["student_name"],
+                    "person_type": "student",
+                    "student_id": st["student_id"],
+                    "reference": r_no or f"TXN-{st['id']}",
+                    "payment_method": st.get("payment_method") or "Cash",
+                    "start_date": st["transaction_date"],
+                    "end_date": st["transaction_date"],
+                    "status": "Completed",
+                    "remarks": st.get("particular") or st.get("remarks") or "Fee payment",
+                    "source": "student_payment",
+                })
+
+        # 4. Teacher Salary Payouts & Advances (if teacher role, or admin looking at all or specific teacher)
+        if target_student_id is None:
+            sal_query = (
+                "SELECT sp.id, sp.teacher_id, sp.salary_month, sp.net_salary, sp.basic_salary, "
+                "sp.payment_date, sp.payment_method, sp.voucher_no, sp.status, sp.remarks, "
+                "t.teacher_name "
+                "FROM salary_payouts sp "
+                "JOIN teachers t ON t.id = sp.teacher_id "
+                "WHERE sp.payment_date LIKE ? "
+            )
+            sal_params = [month_like]
+            if target_teacher_id:
+                sal_query += "AND sp.teacher_id = ? "
+                sal_params.append(target_teacher_id)
+            sal_query += "ORDER BY sp.payment_date ASC, sp.id ASC"
+
+            sal_rows = records(db.query(sal_query, tuple(sal_params)))
+            for sp in sal_rows:
+                net = float(sp["net_salary"] or 0)
+                name = f"Salary Paid: Rs. {net:,.0f} ({sp['salary_month']})" if is_teacher else f"Salary: Rs. {net:,.0f} ({sp['teacher_name']})"
+                all_events.append({
+                    "id": f"sal-{sp['id']}",
+                    "event_name": name,
+                    "event_type": "Salary Payout",
+                    "badge_type": "salary",
+                    "amount": net,
+                    "salary_month": sp["salary_month"],
+                    "person_name": sp["teacher_name"],
+                    "person_type": "teacher",
+                    "teacher_id": sp["teacher_id"],
+                    "reference": sp.get("voucher_no") or f"SAL-{sp['id']}",
+                    "payment_method": sp.get("payment_method") or "Cash",
+                    "start_date": sp["payment_date"],
+                    "end_date": sp["payment_date"],
+                    "status": sp.get("status") or "Paid",
+                    "remarks": sp.get("remarks") or f"Salary for {sp['salary_month']}",
+                    "source": "salary_payout",
+                })
+
+            adv_query = (
+                "SELECT ta.id, ta.teacher_id, ta.advance_date, ta.amount, ta.status, ta.remarks, "
+                "ta.reference_no, t.teacher_name "
+                "FROM teacher_advances ta "
+                "JOIN teachers t ON t.id = ta.teacher_id "
+                "WHERE ta.advance_date LIKE ? "
+            )
+            adv_params = [month_like]
+            if target_teacher_id:
+                adv_query += "AND ta.teacher_id = ? "
+                adv_params.append(target_teacher_id)
+            adv_query += "ORDER BY ta.advance_date ASC, ta.id ASC"
+
+            adv_rows = records(db.query(adv_query, tuple(adv_params)))
+            for ta in adv_rows:
+                amt = float(ta["amount"] or 0)
+                name = f"Advance Taken: Rs. {amt:,.0f}" if is_teacher else f"Advance: Rs. {amt:,.0f} ({ta['teacher_name']})"
+                all_events.append({
+                    "id": f"adv-{ta['id']}",
+                    "event_name": name,
+                    "event_type": "Staff Advance",
+                    "badge_type": "advance",
+                    "amount": amt,
+                    "person_name": ta["teacher_name"],
+                    "person_type": "teacher",
+                    "teacher_id": ta["teacher_id"],
+                    "reference": ta.get("reference_no") or f"ADV-{ta['id']}",
+                    "start_date": ta["advance_date"],
+                    "end_date": ta["advance_date"],
+                    "status": ta.get("status") or "Active",
+                    "remarks": ta.get("remarks") or "Staff advance loan",
+                    "source": "teacher_advance",
+                })
+
+            # Proxy classes
+            prx_query = (
+                "SELECT p.id, p.class_date, p.leave_type, p.status, p.proxy_status, "
+                "r.period_label, r.subject_name, r.start_time, r.end_time, "
+                "COALESCE(ot.teacher_name, '') AS original_teacher, "
+                "COALESCE(pt.teacher_name, '') AS proxy_teacher "
+                "FROM proxy_class_requests p "
+                "JOIN class_routines r ON r.id = p.routine_id "
+                "LEFT JOIN teachers ot ON ot.id = p.original_teacher_id "
+                "LEFT JOIN teachers pt ON pt.id = p.proxy_teacher_id "
+                "WHERE p.class_date LIKE ? AND p.status = 'Approved' "
+            )
+            prx_params = [month_like]
+            if target_teacher_id:
+                prx_query += "AND (p.original_teacher_id = ? OR p.proxy_teacher_id = ?) "
+                prx_params.extend([target_teacher_id, target_teacher_id])
+            prx_query += "ORDER BY p.class_date ASC, r.start_time ASC"
+
+            prx_rows = records(db.query(prx_query, tuple(prx_params)))
+            for p in prx_rows:
+                label = f"Proxy Sub: {p['subject_name']} ({p['period_label']})" if (target_teacher_id and p.get("proxy_teacher") == (p.get("original_teacher") or "")) else f"Proxy Class: {p['subject_name']}"
+                all_events.append({
+                    "id": f"prx-{p['id']}",
+                    "event_name": label,
+                    "event_type": "Proxy Class",
+                    "badge_type": "proxy",
+                    "person_name": p["proxy_teacher"] or p["original_teacher"],
+                    "person_type": "teacher",
+                    "start_date": p["class_date"],
+                    "end_date": p["class_date"],
+                    "status": p.get("proxy_status") or "Accepted",
+                    "remarks": f"{p['leave_type']} leave: {p['period_label']} ({p['start_time']} - {p['end_time']})",
+                    "source": "proxy_class",
+                })
+
+        # Sort all events chronologically
+        all_events.sort(key=lambda x: (x["start_date"], x["id"]))
+
+        # Attach events to matching days in calendar
+        for d in days:
+            b_date = d["date"]
+            d_evs = [e for e in all_events if e["start_date"] <= b_date <= e["end_date"]]
+            d["events"] = d_evs
+            d["due_count"] = sum(1 for e in d_evs if e["badge_type"] == "due")
+            d["due_total"] = sum(float(e.get("amount") or 0) for e in d_evs if e["badge_type"] == "due")
+            d["payment_count"] = sum(1 for e in d_evs if e["badge_type"] == "payment")
+            d["payment_total"] = sum(float(e.get("amount") or 0) for e in d_evs if e["badge_type"] == "payment")
+            d["salary_count"] = sum(1 for e in d_evs if e["badge_type"] == "salary")
+            d["salary_total"] = sum(float(e.get("amount") or 0) for e in d_evs if e["badge_type"] == "salary")
+            d["holiday_count"] = sum(1 for e in d_evs if e["badge_type"] in ("holiday", "closure"))
+
+        students_list = []
+        teachers_list = []
+        if role_scope == "admin":
+            students_list = records(db.query("SELECT id, student_name, class_name FROM students WHERE status='Active' ORDER BY student_name"))
+            teachers_list = records(db.query("SELECT id, teacher_name FROM teachers WHERE status='Active' ORDER BY teacher_name"))
+
+        summary = {
+            "total_due_bills_amount": sum(float(e.get("amount") or 0) for e in all_events if e["badge_type"] == "due"),
+            "total_due_bills_count": sum(1 for e in all_events if e["badge_type"] == "due"),
+            "total_payments_amount": sum(float(e.get("amount") or 0) for e in all_events if e["badge_type"] == "payment"),
+            "total_payments_count": sum(1 for e in all_events if e["badge_type"] == "payment"),
+            "total_salary_amount": sum(float(e.get("amount") or 0) for e in all_events if e["badge_type"] == "salary"),
+            "total_salary_count": sum(1 for e in all_events if e["badge_type"] == "salary"),
+            "total_advances_amount": sum(float(e.get("amount") or 0) for e in all_events if e["badge_type"] == "advance"),
+            "total_academic_events": sum(1 for e in all_events if e["source"] == "academic"),
+        }
+
         return {
             "month": selected_month,
-            "days": services.attendance.academic_calendar_month(selected_month),
-            "events": records(db.query(
-                "SELECT event.*,c.course_name FROM academic_calendar_events event "
-                "LEFT JOIN courses c ON c.id=event.course_id "
-                "WHERE event.start_date<=? AND event.end_date>=? ORDER BY event.start_date,event.id",
-                (f"{selected_month}/99", f"{selected_month}/01"),
-            )),
+            "role_scope": role_scope,
+            "target_student_id": target_student_id,
+            "target_teacher_id": target_teacher_id,
+            "days": days,
+            "events": all_events,
+            "summary": summary,
+            "students_list": students_list,
+            "teachers_list": teachers_list,
         }
 
     @app.get("/api/academic-calendar/courses")
-    def academic_calendar_courses(_user=Depends(require("devices.manage"))):
+    def academic_calendar_courses(_user=Depends(require_any("devices.manage", "master_data.manage", "portal.student", "portal.staff", "dashboard.view"))):
         return records(db.query(
             "SELECT id,course_name,category FROM courses WHERE status='Active' ORDER BY course_name"
         ))
@@ -1975,6 +2477,31 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
             "INSERT INTO academic_calendar_events (event_name,event_type,course_id,start_date,end_date,status,remarks) VALUES (?,?,?,?,?,?,?)",
             (payload.event_name.strip(), payload.event_type, payload.course_id, start_date, end_date, payload.status, payload.remarks.strip()),
         )}
+
+    @app.put("/api/academic-calendar/{event_id}")
+    def update_calendar_event(event_id: int, payload: CalendarEventInput, _user=Depends(require("master_data.manage"))):
+        existing = db.query_one("SELECT * FROM academic_calendar_events WHERE id=?", (event_id,))
+        if not existing:
+            raise HTTPException(status_code=404, detail="Calendar event not found.")
+        start_date = validate_date(payload.start_date, "Start date", date_format=config.date_format)
+        end_date = validate_date(payload.end_date, "End date", allow_blank=True, date_format=config.date_format) or start_date
+        if end_date < start_date:
+            raise HTTPException(status_code=422, detail="End date cannot be before start date.")
+        if payload.course_id is not None and not db.query_one("SELECT id FROM courses WHERE id=?", (payload.course_id,)):
+            raise HTTPException(status_code=422, detail="Selected course was not found.")
+        db.execute(
+            "UPDATE academic_calendar_events SET event_name=?,event_type=?,course_id=?,start_date=?,end_date=?,status=?,remarks=? WHERE id=?",
+            (payload.event_name.strip(), payload.event_type, payload.course_id, start_date, end_date, payload.status, payload.remarks.strip(), event_id),
+        )
+        return {"ok": True}
+
+    @app.delete("/api/academic-calendar/{event_id}")
+    def delete_calendar_event(event_id: int, _user=Depends(require("master_data.manage"))):
+        existing = db.query_one("SELECT * FROM academic_calendar_events WHERE id=?", (event_id,))
+        if not existing:
+            raise HTTPException(status_code=404, detail="Calendar event not found.")
+        db.execute("DELETE FROM academic_calendar_events WHERE id=?", (event_id,))
+        return {"ok": True}
 
     @app.post("/api/academic-calendar/bulk-weekends", status_code=201)
     def create_weekend_events(payload: BulkWeekendInput, _user=Depends(require("master_data.manage"))):
@@ -2024,9 +2551,11 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
         return {"ok": True}
 
     @app.get("/api/bills")
+    @app.get("/api/due-bills")
     def bills(
         status: str = "",
         period: str = "",
+        class_name: str = "",
         student_id: Optional[int] = None,
         user: UserSession = Depends(session),
     ):
@@ -2036,10 +2565,15 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
         is_student = user.role == "student" and user.student_id
         target_student_id = user.student_id if is_student else student_id
         status_filter = status.strip().lower()
+        class_filter = (class_name or "").strip().lower()
 
         for bill in services.billing.repository.list():
             if target_student_id and bill.student_id != target_student_id:
                 continue
+            if class_filter and class_filter not in ("all", "all classes"):
+                b_class = (getattr(bill, "class_name", "") or "").strip().lower()
+                if b_class != class_filter:
+                    continue
             if period:
                 seg_p = services.billing.segregate_period(bill.billing_period)
                 if bill.billing_period != period and period not in seg_p:
@@ -2054,6 +2588,7 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
                 "id": bill.id, "bill_number": bill.bill_number, "enrollment_id": bill.enrollment_id,
                 "student_id": bill.student_id,
                 "student_name": bill.student_name, "course_name": bill.course_name,
+                "class_name": getattr(bill, "class_name", "") or "",
                 "contact": getattr(bill, "contact", ""),
                 "billing_period": bill.billing_period, "issue_date": bill.issue_date,
                 "due_date": bill.due_date, "subtotal": float(bill.subtotal),
@@ -2067,11 +2602,12 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
     def student_dues_summary(
         min_unpaid_months: int = 1,
         search: str = "",
+        class_name: str = "",
         user: UserSession = Depends(session),
     ):
         if not (auth.has_permission(user, "billing.manage") or auth.has_permission(user, "portal.student")):
             raise HTTPException(status_code=403, detail="You do not have permission for this action.")
-        summaries = services.billing.get_student_dues_summary(min_unpaid_months=min_unpaid_months, search=search)
+        summaries = services.billing.get_student_dues_summary(min_unpaid_months=min_unpaid_months, search=search, class_name=class_name)
         if user.role == "student" and user.student_id:
             summaries = [s for s in summaries if s["student_id"] == user.student_id]
         return summaries
@@ -2080,11 +2616,62 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
     def generate_bills(payload: BillGenerationInput, _user=Depends(require("billing.manage"))):
         validate_date(payload.issue_date, "Issue date", date_format=config.date_format)
         validate_date(payload.due_date, "Due date", date_format=config.date_format)
-        result = services.billing.generate_combined_month_range(
-            payload.enrollment_ids, payload.start_month, payload.end_month,
-            payload.issue_date, payload.due_date, payload.remarks,
-        )
+
+        # Prevent accidental over-billing months into the future
+        import nepali_datetime as nepali
+        c_month = nepali.date.today().strftime("%Y/%m")
+        cy, cm = (int(v) for v in c_month.split("/"))
+        next_m_val = cm + 1
+        next_y_val = cy
+        if next_m_val > 12:
+            next_m_val = 1
+            next_y_val += 1
+        allowed_future_month = f"{next_y_val:04d}/{next_m_val:02d}"
+        if payload.end_month > allowed_future_month and not payload.allow_future:
+            raise HTTPException(
+                status_code=422,
+                detail=f"End month '{payload.end_month}' is more than 1 month in advance (current month is {c_month}). Pre-generating bills months ahead creates artificial credit dues. Please use 'Receive Student Advance' instead, or confirm future billing."
+            )
+
+        if payload.combine:
+            result = services.billing.generate_combined_month_range(
+                payload.enrollment_ids, payload.start_month, payload.end_month,
+                payload.issue_date, payload.due_date, payload.remarks,
+            )
+        else:
+            result = services.billing.generate_month_range(
+                payload.enrollment_ids, payload.start_month, payload.end_month,
+                payload.issue_date, payload.due_date, payload.remarks,
+            )
         return {"created": sum(1 for item in result if item.created), "bill_ids": [item.bill.id for item in result]}
+
+    @app.put("/api/bills/{bill_id}")
+    def update_bill(bill_id: int, payload: BillUpdateInput, _user=Depends(require("billing.manage"))):
+        try:
+            bill = services.billing.update_bill(
+                bill_id=bill_id,
+                billing_period=payload.billing_period,
+                issue_date=payload.issue_date,
+                due_date=payload.due_date,
+                subtotal=Decimal(str(payload.subtotal)),
+                discount=Decimal(str(payload.discount)),
+                remarks=payload.remarks,
+            )
+            return {
+                "id": bill.id,
+                "bill_number": bill.bill_number,
+                "billing_period": bill.billing_period,
+                "issue_date": bill.issue_date,
+                "due_date": bill.due_date,
+                "subtotal": float(bill.subtotal),
+                "discount": float(bill.discount),
+                "total_amount": float(bill.total_amount),
+                "paid_amount": float(bill.paid_amount),
+                "status": bill.status,
+                "remarks": bill.remarks,
+            }
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
 
     @app.get("/api/bills/auto-billing/preview")
     def auto_billing_preview(month: str = "", _user=Depends(require("billing.manage"))):
@@ -2135,7 +2722,7 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
             remaining,
             bill.bill_number,
             bill.student_name,
-            bill.course_name,
+            bill.bill_number,
         )
         if not qr_data:
             return {"enabled": False}
@@ -2154,6 +2741,7 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
             "merchant_name": qr_data.merchant_name,
             "amount": float(remaining),
             "bill_number": bill.bill_number,
+            "remark": bill.bill_number,
             "student_name": bill.student_name,
             "payload": payload,
             "instructions": qr_data.instructions,
@@ -2228,6 +2816,49 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 
+    @app.post("/api/bills/{bill_id}/print-pos")
+    def print_bill_pos(bill_id: int, _user=Depends(require("billing.manage"))):
+        bill = services.billing.repository.get(bill_id)
+        if not bill:
+            raise HTTPException(status_code=404, detail="Bill not found.")
+        try:
+            services.billing.print_pos(bill)
+            return {"ok": True, "bill_number": bill.bill_number}
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @app.post("/api/bills/print-pos-by-class")
+    def print_pos_by_class(payload: PrintPosByClassInput, _user=Depends(require("billing.manage"))):
+        try:
+            result = services.billing.print_pos_by_class(payload.class_name, payload.mode)
+            return result
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @app.post("/api/bills/print-pos-batch")
+    def print_pos_batch(payload: PrintPosBatchInput, _user=Depends(require("billing.manage"))):
+        try:
+            if payload.student_ids:
+                mode = (payload.mode or "statement").strip().lower()
+                if mode in ("statement", "statements"):
+                    count = services.billing.print_pos_student_statements(payload.student_ids)
+                else:
+                    count = services.billing.print_pos_student_bills(payload.student_ids)
+                return {"ok": True, "mode": mode, "printed_count": count}
+            elif payload.bill_ids:
+                bills = [services.billing.repository.get(bid) for bid in payload.bill_ids]
+                bills = [b for b in bills if b]
+                if not bills:
+                    raise HTTPException(status_code=400, detail="No valid bills provided.")
+                services.billing.print_pos_many(bills)
+                return {"ok": True, "mode": "bills", "printed_count": len(bills)}
+            else:
+                raise HTTPException(status_code=400, detail="Provide either student_ids or bill_ids.")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
     @app.post("/api/bills/pay-multiple")
     def pay_multiple_bills(payload: MultiBillPaymentInput, _user=Depends(require("billing.manage"))):
         validate_date(payload.payment_date, "Payment date", date_format=config.date_format)
@@ -2259,6 +2890,7 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail=str(exc))
 
     @app.post("/api/bills/{bill_id}/payment")
+    @app.post("/api/due-bills/{bill_id}/payments")
     def pay_bill(bill_id: int, payload: BillPaymentInput, _user=Depends(require("billing.manage"))):
         validate_date(payload.payment_date, "Payment date", date_format=config.date_format)
         if payload.amount > 0 and not payload.account_id:
@@ -2281,27 +2913,235 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
                 "status": bill.status,
                 "advance_amount": float(result["advance_amount"]),
                 "transaction_ids": result["transaction_ids"],
+                "updated_bills": result.get("updated_bills", []),
             }
         except Exception as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 
+    @app.post("/api/bills/advance-payment")
+    def record_advance_payment(payload: AdvancePaymentInput, _user=Depends(require("billing.manage"))):
+        validate_date(payload.payment_date, "Payment date", date_format=config.date_format)
+        if payload.amount <= 0:
+            raise HTTPException(status_code=422, detail="Payment amount must be greater than zero.")
+        if not payload.account_id:
+            raise HTTPException(status_code=422, detail="Select the receiving account.")
+        try:
+            result = services.billing.repository.record_advance_payment(
+                student_id=payload.student_id,
+                amount=Decimal(str(payload.amount)),
+                payment_date=payload.payment_date,
+                account_id=payload.account_id,
+                payment_method=payload.payment_method,
+                receipt_no=payload.receipt_no.strip(),
+                remarks=payload.remarks.strip(),
+            )
+            return {
+                "success": True,
+                "student_id": result["student_id"],
+                "total_paid": float(result["total_paid"]),
+                "advance_amount": float(result["advance_amount"]),
+                "updated_bills": result["updated_bills"],
+                "transaction_ids": result["transaction_ids"],
+            }
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @app.post("/api/bills/reconcile-fifo")
+    def reconcile_bills_fifo(payload: dict | None = None, _user=Depends(require("billing.manage"))):
+        try:
+            student_id = payload.get("student_id") if payload else None
+            student_id = int(student_id) if student_id else None
+            result = services.billing.reconcile_student_billing_fifo(student_id=student_id)
+            return {"success": True, **result}
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @app.delete("/api/due-bills/{bill_id}")
+    @app.delete("/api/bills/{bill_id}")
+    def delete_bill(bill_id: int, _user=Depends(session)):
+        try:
+            bill = services.billing.repository.get(bill_id)
+            if not bill:
+                raise HTTPException(status_code=404, detail="Bill not found.")
+            is_paid = bill.paid_amount > Decimal("0")
+            if is_paid:
+                if _user.role not in ("super_admin", "admin") and not auth.has_permission(_user, "administration.manage"):
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Access Denied: Only administrators are authorized to delete bills with recorded payments."
+                    )
+            else:
+                if not auth.has_any_permission(_user, ("billing.manage", "administration.manage")):
+                    raise HTTPException(status_code=403, detail="Permission required: billing.manage")
+
+            result = services.billing.delete_bill(
+                bill_id=bill_id,
+                actor_user_id=_user.user_id,
+                actor_username=_user.username,
+                actor_role=_user.role,
+                force_paid=True,
+            )
+            return {"success": True, **result}
+        except HTTPException:
+            raise
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @app.get("/api/due-bills/{bill_id}/payments")
+    @app.get("/api/bills/{bill_id}/payments")
+    def get_bill_payments(bill_id: int, _user=Depends(require("billing.manage"))):
+        try:
+            payments = services.billing.get_payments_for_bill(bill_id)
+            return {"bill_id": bill_id, "payments": records(payments)}
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @app.get("/api/student-payments")
+    def list_student_payments(search: str = "", period: str = "", _user=Depends(require("billing.manage"))):
+        try:
+            payments = services.billing.list_payment_records(search=search, period=period)
+            return {"payments": records(payments)}
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @app.delete("/api/due-bills/{bill_id}/payments/{txn_id}")
+    @app.delete("/api/bills/{bill_id}/payments/{txn_id}")
+    @app.delete("/api/student-transactions/{txn_id}")
+    def delete_student_payment(txn_id: int, bill_id: int | None = None, _user=Depends(session)):
+        if _user.role not in ("super_admin", "admin") and not auth.has_permission(_user, "administration.manage"):
+            raise HTTPException(status_code=403, detail="Access Denied: Only administrators are authorized to delete payment records.")
+        try:
+            result = services.billing.delete_payment(
+                transaction_id=txn_id,
+                actor_user_id=_user.user_id,
+                actor_username=_user.username,
+                actor_role=_user.role,
+            )
+            return {"success": True, **result}
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
     @app.get("/api/staff")
-    def staff(_user=Depends(require_any("staff.manage", "portal.staff", "master_data.manage"))):
-        return records(db.query(
-            "SELECT id,teacher_name,staff_type,contact,email,subject,joined_date,salary_type,basic_salary,status FROM teachers ORDER BY teacher_name"
+    @app.get("/api/teachers")
+    def staff(_user=Depends(require_any("staff.manage", "portal.staff", "master_data.manage", "administration.manage"))):
+        teacher_rows = records(db.query(
+            "SELECT id,teacher_name,staff_type,contact,address,email,qualification,subject,joined_date,salary_type,basic_salary,status,remarks FROM teachers ORDER BY teacher_name"
         ))
+        try:
+            all_ts = services.subjects.get_all_teacher_subjects()
+        except Exception:
+            all_ts = {}
+        for t in teacher_rows:
+            tid = int(t["id"])
+            ts_list = all_ts.get(tid, [])
+            t["subject_ids"] = [ts.subject_id for ts in ts_list]
+            t["subjects"] = [ts.subject_name for ts in ts_list]
+            if not t["subjects"] and t.get("subject"):
+                t["subjects"] = [s.strip() for s in re.split(r"[,;/]+", t["subject"]) if s.strip()]
+        return teacher_rows
 
     @app.post("/api/staff", status_code=201)
     def create_staff(payload: StaffInput, _user=Depends(require("staff.manage"))):
         joined_date = validate_date(payload.joined_date, "Joined date", date_format=config.date_format)
+        subject_str = payload.subject.strip()
+        if payload.subject_ids and not subject_str:
+            subjs = [services.subjects.get(sid) for sid in payload.subject_ids]
+            subject_str = ", ".join(s.subject_name for s in subjs if s)
         staff_id = db.execute(
             "INSERT INTO teachers (teacher_name,staff_type,contact,address,email,qualification,subject,joined_date,salary_type,basic_salary,status,remarks) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (payload.teacher_name.strip(), payload.staff_type, payload.contact.strip(), payload.address.strip(),
-             payload.email.strip(), payload.qualification.strip(), payload.subject.strip(), joined_date,
+             payload.email.strip(), payload.qualification.strip(), subject_str, joined_date,
              payload.salary_type.strip(), str(Decimal(str(payload.basic_salary))), payload.status, payload.remarks.strip()),
         )
+        if payload.subject_ids:
+            services.subjects.set_teacher_subjects(staff_id, payload.subject_ids)
+        elif subject_str:
+            for s_name in [s.strip() for s in re.split(r"[,;/]+", subject_str) if s.strip()]:
+                s_obj = db.query_one("SELECT id FROM subjects WHERE LOWER(subject_name)=LOWER(?) OR LOWER(subject_code)=LOWER(?)", (s_name, s_name))
+                if s_obj:
+                    services.subjects.assign_teacher_subject(staff_id, s_obj["id"], sync_text=False)
         services.staff_finance.sync_account(staff_id)
         return {"id": staff_id}
+
+    @app.put("/api/staff/{staff_id}")
+    @app.put("/api/teachers/{staff_id}")
+    def update_staff(staff_id: int, payload: StaffInput, _user=Depends(require("staff.manage"))):
+        teacher = db.query_one("SELECT id FROM teachers WHERE id = ?", (staff_id,))
+        if not teacher:
+            raise HTTPException(status_code=404, detail="Staff record not found.")
+        joined_date = validate_date(payload.joined_date, "Joined date", date_format=config.date_format)
+        subject_str = payload.subject.strip()
+        if payload.subject_ids and not subject_str:
+            subjs = [services.subjects.get(sid) for sid in payload.subject_ids]
+            subject_str = ", ".join(s.subject_name for s in subjs if s)
+        db.execute(
+            "UPDATE teachers SET teacher_name=?, staff_type=?, contact=?, address=?, email=?, qualification=?, subject=?, joined_date=?, salary_type=?, basic_salary=?, status=?, remarks=? WHERE id=?",
+            (payload.teacher_name.strip(), payload.staff_type, payload.contact.strip(), payload.address.strip(),
+             payload.email.strip(), payload.qualification.strip(), subject_str, joined_date,
+             payload.salary_type.strip(), str(Decimal(str(payload.basic_salary))), payload.status, payload.remarks.strip(), staff_id),
+        )
+        if payload.subject_ids:
+            services.subjects.set_teacher_subjects(staff_id, payload.subject_ids)
+        elif subject_str:
+            matched_ids = []
+            for s_name in [s.strip() for s in re.split(r"[,;/]+", subject_str) if s.strip()]:
+                s_obj = db.query_one("SELECT id FROM subjects WHERE LOWER(subject_name)=LOWER(?) OR LOWER(subject_code)=LOWER(?)", (s_name, s_name))
+                if s_obj:
+                    matched_ids.append(s_obj["id"])
+            if matched_ids:
+                services.subjects.set_teacher_subjects(staff_id, matched_ids)
+        services.staff_finance.sync_account(staff_id)
+        return {"ok": True}
+
+    @app.get("/api/teachers/{teacher_id}/subjects")
+    @app.get("/api/staff/{teacher_id}/subjects")
+    def get_teacher_subjects_api(teacher_id: int, _user=Depends(require_any("staff.manage", "portal.staff", "master_data.manage"))):
+        teacher = db.query_one("SELECT id, teacher_name, subject FROM teachers WHERE id = ?", (teacher_id,))
+        if not teacher:
+            raise HTTPException(status_code=404, detail="Teacher not found.")
+        assigned = services.subjects.get_teacher_subjects(teacher_id)
+        return [{
+            "id": ts.id,
+            "teacher_id": ts.teacher_id,
+            "subject_id": ts.subject_id,
+            "subject_code": ts.subject_code,
+            "subject_name": ts.subject_name,
+            "subject_type": ts.subject_type,
+            "status": ts.status,
+            "remarks": ts.remarks,
+        } for ts in assigned]
+
+    @app.post("/api/teachers/{teacher_id}/subjects")
+    @app.post("/api/staff/{teacher_id}/subjects")
+    def assign_teacher_subject_api(teacher_id: int, payload: TeacherSubjectInput, _user=Depends(require("staff.manage"))):
+        teacher = db.query_one("SELECT id FROM teachers WHERE id = ?", (teacher_id,))
+        if not teacher:
+            raise HTTPException(status_code=404, detail="Teacher not found.")
+        rec_id = services.subjects.assign_teacher_subject(teacher_id, payload.subject_id, remarks=payload.remarks)
+        return {"ok": True, "id": rec_id}
+
+    @app.delete("/api/teachers/{teacher_id}/subjects/{subject_id}")
+    @app.delete("/api/staff/{teacher_id}/subjects/{subject_id}")
+    def remove_teacher_subject_api(teacher_id: int, subject_id: int, _user=Depends(require("staff.manage"))):
+        services.subjects.remove_teacher_subject(teacher_id, subject_id)
+        return {"ok": True}
+
+    @app.post("/api/teachers/{teacher_id}/assign-subjects")
+    @app.post("/api/staff/{teacher_id}/assign-subjects")
+    def batch_assign_teacher_subjects_api(teacher_id: int, payload: TeacherSubjectAssignInput, _user=Depends(require("staff.manage"))):
+        teacher = db.query_one("SELECT id FROM teachers WHERE id = ?", (teacher_id,))
+        if not teacher:
+            raise HTTPException(status_code=404, detail="Teacher not found.")
+        services.subjects.set_teacher_subjects(teacher_id, payload.subject_ids)
+        return {"ok": True, "count": len(payload.subject_ids)}
 
     # -----------------------------------------------------------------------
     # Teacher / Staff Self-Service Portal
@@ -2401,6 +3241,24 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
         _sync_billing_qr_account(account_id)
         return {"status": "success", "message": f"'{acc['account_name']}' is now set as the active billing QR account."}
 
+    @app.put("/api/accounts/{account_id}")
+    def update_account(account_id: int, payload: AccountInput, _user=Depends(require("finance.manage"))):
+        acc = db.query_one("SELECT * FROM accounts WHERE id=?", (account_id,))
+        if not acc:
+            raise HTTPException(status_code=404, detail="Account was not found.")
+        if payload.is_billing_default:
+            db.execute("UPDATE accounts SET is_billing_default=0")
+        db.execute(
+            "UPDATE accounts SET account_name=?,account_type=?,bank_name=?,bank_code=?,account_number=?,account_holder=?,opening_balance=?,is_billing_default=?,status=?,remarks=? WHERE id=?",
+            (payload.account_name.strip(), payload.account_type.strip(), payload.bank_name.strip(),
+             payload.bank_code.strip(), payload.account_number.strip(), payload.account_holder.strip(),
+             str(Decimal(str(payload.opening_balance))), 1 if payload.is_billing_default else 0,
+             payload.status, payload.remarks.strip(), account_id),
+        )
+        if payload.is_billing_default:
+            _sync_billing_qr_account(account_id)
+        return {"ok": True}
+
     def _sync_billing_qr_account(account_id: int):
         acc = db.query_one("SELECT * FROM accounts WHERE id=?", (account_id,))
         if not acc:
@@ -2453,6 +3311,29 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
     def create_income(payload: MoneyRecordInput, _user=Depends(require("finance.manage"))):
         return {"id": save_money_record(payload, "income")}
 
+    @app.put("/api/income/{income_id}")
+    def update_income(income_id: int, payload: MoneyRecordInput, _user=Depends(require("finance.manage"))):
+        record = db.query_one("SELECT * FROM income_records WHERE id=?", (income_id,))
+        if not record:
+            raise HTTPException(status_code=404, detail="Income record not found.")
+        record_date = validate_date(payload.record_date, "Record date", date_format=config.date_format)
+        amount = positive(payload.amount, "Amount")
+        account = db.query_one("SELECT id FROM accounts WHERE id=? AND status='Active'", (payload.account_id,))
+        if not account:
+            raise HTTPException(status_code=422, detail="Select an active account.")
+        def callback(conn):
+            conn.execute(
+                "UPDATE income_records SET income_date=?,category=?,particular=?,amount=?,received_in_account_id=?,received_from=?,payment_method=?,reference_no=?,remarks=? WHERE id=?",
+                (record_date, payload.category.strip(), payload.particular.strip(), str(amount), payload.account_id,
+                 payload.party.strip(), payload.payment_method, payload.reference_no.strip(), payload.remarks.strip(), income_id),
+            )
+            conn.execute(
+                "UPDATE ledger SET transaction_date=?,account_id=?,amount=?,particular=?,reference_no=?,remarks=? WHERE source_type='Income' AND source_id=?",
+                (record_date, payload.account_id, str(amount), payload.particular.strip(), payload.reference_no.strip(), payload.remarks.strip(), income_id),
+            )
+        db.transaction(callback)
+        return {"ok": True}
+
     @app.get("/api/expenses")
     def expenses(_user=Depends(require("finance.manage"))):
         return records(db.query(
@@ -2462,6 +3343,29 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
     @app.post("/api/expenses", status_code=201)
     def create_expense(payload: MoneyRecordInput, _user=Depends(require("finance.manage"))):
         return {"id": save_money_record(payload, "expense")}
+
+    @app.put("/api/expenses/{expense_id}")
+    def update_expense(expense_id: int, payload: MoneyRecordInput, _user=Depends(require("finance.manage"))):
+        record = db.query_one("SELECT * FROM expense_records WHERE id=?", (expense_id,))
+        if not record:
+            raise HTTPException(status_code=404, detail="Expense record not found.")
+        record_date = validate_date(payload.record_date, "Record date", date_format=config.date_format)
+        amount = positive(payload.amount, "Amount")
+        account = db.query_one("SELECT id FROM accounts WHERE id=? AND status='Active'", (payload.account_id,))
+        if not account:
+            raise HTTPException(status_code=422, detail="Select an active account.")
+        def callback(conn):
+            conn.execute(
+                "UPDATE expense_records SET expense_date=?,category=?,particular=?,amount=?,paid_from_account_id=?,paid_to=?,payment_method=?,reference_no=?,remarks=? WHERE id=?",
+                (record_date, payload.category.strip(), payload.particular.strip(), str(amount), payload.account_id,
+                 payload.party.strip(), payload.payment_method, payload.reference_no.strip(), payload.remarks.strip(), expense_id),
+            )
+            conn.execute(
+                "UPDATE ledger SET transaction_date=?,account_id=?,amount=?,particular=?,reference_no=?,remarks=? WHERE source_type='Expense' AND source_id=?",
+                (record_date, payload.account_id, str(amount), payload.particular.strip(), payload.reference_no.strip(), payload.remarks.strip(), expense_id),
+            )
+        db.transaction(callback)
+        return {"ok": True}
 
     @app.get("/api/ledger")
     def ledger(_user=Depends(require("reports.view"))):
@@ -2517,6 +3421,19 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
             (payload.title.strip(), payload.details.strip(), payload.assigned_teacher_id, due_date, payload.priority, user.user_id),
         )}
 
+    @app.put("/api/tasks/{task_id}")
+    def update_task(task_id: int, payload: TodoInput, _user=Depends(require("dashboard.view"))):
+        item = db.query_one("SELECT * FROM todo_items WHERE id=?", (task_id,))
+        if not item:
+            raise HTTPException(status_code=404, detail="Task not found.")
+        due_date = validate_date(payload.due_date, "Due date", allow_blank=True, date_format=config.date_format)
+        status_val = payload.status if payload.status else item["status"]
+        db.execute(
+            "UPDATE todo_items SET title=?,details=?,assigned_teacher_id=?,due_date=?,priority=?,status=? WHERE id=?",
+            (payload.title.strip(), payload.details.strip(), payload.assigned_teacher_id, due_date, payload.priority, status_val, task_id),
+        )
+        return {"ok": True}
+
     @app.post("/api/tasks/{task_id}/complete")
     def complete_task(task_id: int, _user=Depends(require("dashboard.view"))):
         db.execute("UPDATE todo_items SET status='Done',completed_at=CURRENT_TIMESTAMP WHERE id=?", (task_id,))
@@ -2568,6 +3485,21 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
         assistant = InstituteAssistant(services, db)
         res = assistant.execute(payload.prompt)
         return {
+            "title": res.title,
+            "content": res.content,
+            "badge": res.badge,
+            "data_rows": res.data_rows,
+            "suggested_actions": res.suggested_actions,
+        }
+
+    @app.post("/api/assistant/chat")
+    def assistant_chat(payload: dict = Body(...), _user=Depends(require("assistant.view"))):
+        prompt = str(payload.get("message") or payload.get("prompt") or "").strip()
+        assistant = InstituteAssistant(services, db)
+        res = assistant.execute(prompt)
+        return {
+            "reply": res.content,
+            "text": res.content,
             "title": res.title,
             "content": res.content,
             "badge": res.badge,
@@ -2762,6 +3694,122 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
         return {"ok": True}
 
     # -----------------------------------------------------------------------
+    # Subjects & Student Electives
+    # -----------------------------------------------------------------------
+    @app.get("/api/subjects")
+    def list_subjects(
+        status: str | None = None,
+        subject_type: str | None = None,
+        class_level_id: int | None = None,
+        _user=Depends(require_any("master_data.manage", "portal.student", "portal.staff", "students.manage")),
+    ):
+        subjects = services.subjects.list_subjects(
+            status=status,
+            subject_type=subject_type,
+            class_level_id=class_level_id,
+        )
+        return [
+            {
+                "id": s.id,
+                "subject_code": s.subject_code,
+                "subject_name": s.subject_name,
+                "subject_type": s.subject_type,
+                "class_level_id": s.class_level_id,
+                "class_name": s.class_name,
+                "status": s.status,
+                "remarks": s.remarks,
+                "created_at": s.created_at,
+            }
+            for s in subjects
+        ]
+
+    @app.post("/api/subjects", status_code=201)
+    def create_subject(payload: SubjectInput, _user=Depends(require("master_data.manage"))):
+        sub = Subject(
+            id=None,
+            subject_code=payload.subject_code.strip(),
+            subject_name=payload.subject_name.strip(),
+            subject_type=payload.subject_type,
+            class_level_id=payload.class_level_id,
+            class_name=payload.class_name.strip() if payload.class_name else None,
+            status=payload.status,
+            remarks=payload.remarks.strip(),
+        )
+        new_id = services.subjects.create(sub)
+        return {"id": new_id}
+
+    @app.put("/api/subjects/{subject_id}")
+    def update_subject(subject_id: int, payload: SubjectInput, _user=Depends(require("master_data.manage"))):
+        sub = Subject(
+            id=subject_id,
+            subject_code=payload.subject_code.strip(),
+            subject_name=payload.subject_name.strip(),
+            subject_type=payload.subject_type,
+            class_level_id=payload.class_level_id,
+            class_name=payload.class_name.strip() if payload.class_name else None,
+            status=payload.status,
+            remarks=payload.remarks.strip(),
+        )
+        services.subjects.update(sub)
+        return {"ok": True}
+
+    @app.delete("/api/subjects/{subject_id}")
+    def delete_subject(subject_id: int, _user=Depends(require("master_data.manage"))):
+        services.subjects.delete(subject_id)
+        return {"ok": True}
+
+    @app.get("/api/students/{student_id}/subjects")
+    def get_student_subjects(student_id: int, status: str | None = None, _user=Depends(session)):
+        if not _can_access_student(_user, student_id):
+            raise HTTPException(status_code=403, detail="You do not have permission for this action.")
+        assigned = services.subjects.get_student_subjects(student_id, status=status)
+        return [
+            {
+                "id": a.id,
+                "student_id": a.student_id,
+                "subject_id": a.subject_id,
+                "enrollment_type": a.enrollment_type,
+                "assigned_date": a.assigned_date,
+                "status": a.status,
+                "remarks": a.remarks,
+                "created_at": a.created_at,
+                "subject_code": a.subject_code,
+                "subject_name": a.subject_name,
+                "subject_type": a.subject_type,
+                "student_name": a.student_name,
+                "class_name": a.class_name,
+            }
+            for a in assigned
+        ]
+
+    @app.post("/api/students/{student_id}/subjects", status_code=201)
+    def assign_student_subject(student_id: int, payload: StudentSubjectAssignInput, _user=Depends(require("students.manage"))):
+        assigned_id = services.subjects.assign_student_subject(
+            student_id=student_id,
+            subject_id=payload.subject_id,
+            enrollment_type=payload.enrollment_type,
+            assigned_date=payload.assigned_date.strip() if payload.assigned_date else None,
+            remarks=payload.remarks.strip(),
+        )
+        return {"id": assigned_id}
+
+    @app.delete("/api/students/{student_id}/subjects/{subject_id}")
+    def remove_student_subject(student_id: int, subject_id: int, _user=Depends(require("students.manage"))):
+        services.subjects.remove_student_subject(student_id, subject_id)
+        return {"ok": True}
+
+    @app.post("/api/students/batch-assign-subject", status_code=200)
+    def batch_assign_subject(payload: BatchAssignSubjectInput, _user=Depends(require("students.manage"))):
+        count = services.subjects.batch_assign(
+            student_ids=payload.student_ids,
+            subject_id=payload.subject_id,
+            enrollment_type=payload.enrollment_type,
+            assigned_date=payload.assigned_date.strip() if payload.assigned_date else None,
+            remarks=payload.remarks.strip(),
+        )
+        return {"ok": True, "count": count}
+
+    # -----------------------------------------------------------------------
     # Class Routines
     # -----------------------------------------------------------------------
     @app.get("/api/routines/plans")
@@ -2798,6 +3846,7 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
         return {"id": db.transaction(callback)}
 
     @app.get("/api/routines")
+    @app.get("/api/class-routines")
     def list_routines(
         routine_plan_id: int | None = None,
         class_level_id: int | None = None,
@@ -2871,11 +3920,12 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
                 match_params.append(int(course_id))
 
         rows = db.query(
-            "SELECT r.*, t.teacher_name, c.course_name, cl.level_name "
+            "SELECT r.*, t.teacher_name, c.course_name, cl.level_name, s.subject_code, s.subject_type "
             "FROM class_routines r "
             "LEFT JOIN teachers t ON t.id=r.teacher_id "
             "LEFT JOIN courses c ON c.id=r.course_id "
             "LEFT JOIN class_levels cl ON cl.id=r.class_level_id "
+            "LEFT JOIN subjects s ON s.id=r.subject_id "
             f"WHERE r.routine_plan_id=? AND {where_match} "
             "ORDER BY CASE r.day_of_week WHEN 'Sunday' THEN 1 WHEN 'Monday' THEN 2 WHEN 'Tuesday' THEN 3 "
             "WHEN 'Wednesday' THEN 4 WHEN 'Thursday' THEN 5 WHEN 'Friday' THEN 6 WHEN 'Saturday' THEN 7 ELSE 8 END, "
@@ -2885,22 +3935,49 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
         return records(rows)
 
     @app.post("/api/routines", status_code=201)
+    @app.post("/api/class-routines", status_code=201)
     def create_routine_period(payload: RoutinePeriodInput, _user=Depends(require("master_data.manage"))):
+        subject_id = payload.subject_id
+        subject_name = payload.subject_name.strip()
+        if subject_id and not subject_name:
+            s_row = db.query_one("SELECT subject_name FROM subjects WHERE id=?", (subject_id,))
+            if s_row:
+                subject_name = s_row["subject_name"]
+        elif subject_name and not subject_id:
+            s_row = db.query_one("SELECT id FROM subjects WHERE subject_name=? OR subject_code=?", (subject_name, subject_name))
+            if s_row:
+                subject_id = s_row["id"]
+        if not subject_name:
+            raise HTTPException(status_code=422, detail="Subject is required.")
+
         routine_id = db.execute(
-            "INSERT INTO class_routines (class_name, day_of_week, period_label, subject_name, class_level_id, teacher_id, course_id, start_time, end_time, status, remarks, routine_plan_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (payload.class_name.strip(), payload.day_of_week, payload.period_label.strip(), payload.subject_name.strip(),
-             payload.class_level_id, payload.teacher_id, payload.course_id, payload.start_time.strip(), payload.end_time.strip(),
+            "INSERT INTO class_routines (class_name, day_of_week, period_label, subject_name, subject_id, class_level_id, teacher_id, course_id, start_time, end_time, status, remarks, routine_plan_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (payload.class_name.strip(), payload.day_of_week, payload.period_label.strip(), subject_name,
+             subject_id, payload.class_level_id, payload.teacher_id, payload.course_id, payload.start_time.strip(), payload.end_time.strip(),
              payload.status, payload.remarks.strip(), payload.routine_plan_id),
         )
         return {"id": routine_id}
 
     @app.put("/api/routines/{routine_id}")
     def update_routine_period(routine_id: int, payload: RoutinePeriodInput, _user=Depends(require("master_data.manage"))):
+        subject_id = payload.subject_id
+        subject_name = payload.subject_name.strip()
+        if subject_id and not subject_name:
+            s_row = db.query_one("SELECT subject_name FROM subjects WHERE id=?", (subject_id,))
+            if s_row:
+                subject_name = s_row["subject_name"]
+        elif subject_name and not subject_id:
+            s_row = db.query_one("SELECT id FROM subjects WHERE subject_name=? OR subject_code=?", (subject_name, subject_name))
+            if s_row:
+                subject_id = s_row["id"]
+        if not subject_name:
+            raise HTTPException(status_code=422, detail="Subject is required.")
+
         db.execute(
-            "UPDATE class_routines SET class_name=?, day_of_week=?, period_label=?, subject_name=?, class_level_id=?, teacher_id=?, course_id=?, start_time=?, end_time=?, status=?, remarks=?, routine_plan_id=? WHERE id=?",
-            (payload.class_name.strip(), payload.day_of_week, payload.period_label.strip(), payload.subject_name.strip(),
-             payload.class_level_id, payload.teacher_id, payload.course_id, payload.start_time.strip(), payload.end_time.strip(),
+            "UPDATE class_routines SET class_name=?, day_of_week=?, period_label=?, subject_name=?, subject_id=?, class_level_id=?, teacher_id=?, course_id=?, start_time=?, end_time=?, status=?, remarks=?, routine_plan_id=? WHERE id=?",
+            (payload.class_name.strip(), payload.day_of_week, payload.period_label.strip(), subject_name,
+             subject_id, payload.class_level_id, payload.teacher_id, payload.course_id, payload.start_time.strip(), payload.end_time.strip(),
              payload.status, payload.remarks.strip(), payload.routine_plan_id, routine_id),
         )
         return {"ok": True}
@@ -2909,6 +3986,64 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
     def delete_routine_period(routine_id: int, _user=Depends(require("master_data.manage"))):
         db.execute("DELETE FROM class_routines WHERE id=?", (routine_id,))
         return {"ok": True}
+
+    @app.post("/api/routines/bulk-edit")
+    @app.put("/api/routines/bulk")
+    def bulk_edit_routines(payload: BulkRoutineEditInput, _user=Depends(require("master_data.manage"))):
+        if not payload.routine_ids:
+            raise HTTPException(status_code=422, detail="At least one routine period must be selected.")
+
+        subject_id = payload.subject_id
+        subject_name = (payload.subject_name or "").strip()
+        if subject_id and not subject_name:
+            s_row = db.query_one("SELECT subject_name FROM subjects WHERE id=?", (subject_id,))
+            if s_row:
+                subject_name = s_row["subject_name"]
+        elif subject_name and not subject_id:
+            s_row = db.query_one("SELECT id FROM subjects WHERE LOWER(subject_name)=LOWER(?) OR LOWER(subject_code)=LOWER(?)", (subject_name, subject_name))
+            if s_row:
+                subject_id = s_row["id"]
+
+        updates = []
+        params = []
+        if subject_name or subject_id:
+            updates.append("subject_name = ?")
+            params.append(subject_name)
+            updates.append("subject_id = ?")
+            params.append(subject_id)
+        if payload.teacher_id is not None:
+            updates.append("teacher_id = ?")
+            params.append(payload.teacher_id)
+        elif payload.clear_teacher:
+            updates.append("teacher_id = NULL")
+
+        if payload.course_id is not None:
+            updates.append("course_id = ?")
+            params.append(payload.course_id)
+        elif payload.clear_course:
+            updates.append("course_id = NULL")
+
+        if payload.start_time is not None and payload.start_time.strip():
+            updates.append("start_time = ?")
+            params.append(payload.start_time.strip())
+        if payload.end_time is not None and payload.end_time.strip():
+            updates.append("end_time = ?")
+            params.append(payload.end_time.strip())
+        if payload.status is not None and payload.status.strip():
+            updates.append("status = ?")
+            params.append(payload.status.strip())
+        if payload.remarks is not None and payload.remarks.strip():
+            updates.append("remarks = ?")
+            params.append(payload.remarks.strip())
+
+        if not updates:
+            raise HTTPException(status_code=422, detail="No fields specified to update.")
+
+        placeholders = ",".join("?" for _ in payload.routine_ids)
+        sql = f"UPDATE class_routines SET {', '.join(updates)} WHERE id IN ({placeholders})"
+        db.execute(sql, tuple(params + payload.routine_ids))
+        return {"ok": True, "count": len(payload.routine_ids), "message": f"Successfully updated {len(payload.routine_ids)} routine period(s)."}
+
 
     @app.get("/api/routines/pdf")
     def download_routine_pdf(
@@ -3024,35 +4159,204 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
     # -----------------------------------------------------------------------
     # Staff Salary Payouts & Payslips
     # -----------------------------------------------------------------------
+    def _calc_staff_salary(teacher_id: int, month: str) -> dict:
+        summary = services.attendance.staff_month_summary(teacher_id, month)
+        routine = services.attendance.teacher_period_summary(teacher_id, month)
+        adv_row = db.query_one(
+            "SELECT COALESCE(SUM(amount - recovered_amount), 0) total_advance, "
+            "COALESCE(SUM(monthly_deduction), 0) total_monthly_deduction "
+            "FROM teacher_advances WHERE teacher_id=? AND status IN ('Outstanding', 'Partially Recovered')",
+            (teacher_id,),
+        )
+        total_advance = float(adv_row["total_advance"] if adv_row else 0)
+        monthly_ded = float(adv_row["total_monthly_deduction"] if adv_row else 0)
+        suggested_advance_deduction = monthly_ded if (0 < monthly_ded <= total_advance) else total_advance
+
+        teacher_row = db.query_one("SELECT salary_type, basic_salary, teacher_name, staff_type FROM teachers WHERE id=?", (teacher_id,))
+        salary_type = teacher_row["salary_type"] if teacher_row else "Monthly Salary"
+        basic_rate = float(teacher_row["basic_salary"] if teacher_row else 0)
+
+        scheduled_classes = routine.get("scheduled_classes", 0)
+        attended_classes = routine.get("attended_classes", 0)
+        absent_classes = routine.get("absent_classes", 0)
+        relieved_classes = routine.get("relieved_classes", 0)
+        proxy_classes_taken = routine.get("proxy_classes_taken", 0)
+        proxy_classes_relieved = routine.get("proxy_classes_relieved", 0)
+        payable_classes = routine.get("payable_classes", attended_classes + proxy_classes_taken)
+
+        if salary_type == "Per Class Payment":
+            rate_per_class = basic_rate
+            suggested_basic = round(rate_per_class * payable_classes, 2)
+            suggested_extra = 0.0
+        else:
+            suggested_basic = basic_rate
+            if proxy_classes_taken > 0 and scheduled_classes > 0:
+                approx_rate = round(basic_rate / max(scheduled_classes, 1), 2)
+                suggested_extra = round(proxy_classes_taken * approx_rate, 2)
+            else:
+                suggested_extra = 0.0
+
+        gross = suggested_basic + suggested_extra
+        net_total = max(0.0, gross - suggested_advance_deduction)
+
+        return {
+            "summary": summary,
+            "scheduled_classes": scheduled_classes,
+            "attended_classes": attended_classes,
+            "absent_classes": absent_classes,
+            "relieved_classes": relieved_classes,
+            "proxy_classes_taken": proxy_classes_taken,
+            "proxy_classes_relieved": proxy_classes_relieved,
+            "payable_classes": payable_classes,
+            "proxy_taken_list": routine.get("proxy_taken_list", []),
+            "proxy_relieved_list": routine.get("proxy_relieved_list", []),
+            "routine_breakdown": routine,
+            "outstanding_advance": total_advance,
+            "suggested_advance_deduction": suggested_advance_deduction,
+            "salary_type": salary_type,
+            "basic_salary": basic_rate,
+            "suggested_basic": suggested_basic,
+            "suggested_extra": suggested_extra,
+            "net_total": round(net_total, 2),
+        }
+
+    def _record_salary_payment(conn, salary_id: int, teacher_id: int, month: str, pay_date: str,
+                               account_id: int, payment_method: str, voucher_no: str, remarks: str,
+                               basic: Decimal, extra: Decimal, bonus: Decimal, allowance: Decimal,
+                               advance: Decimal, other: Decimal, net: Decimal):
+        staff_row = conn.execute("SELECT teacher_name FROM teachers WHERE id=?", (teacher_id,)).fetchone()
+        staff_name = staff_row["teacher_name"] if staff_row else "Staff member"
+        gross_salary = basic + extra + bonus + allowance
+
+        voucher_val = (voucher_no or f"SAL-{salary_id}").strip()
+        rem_val = (remarks or "").strip()
+        exp_remarks = (f"{rem_val} [SAL-{salary_id}]").strip()
+
+        conn.execute(
+            """
+            INSERT INTO expense_records
+            (expense_date, category, particular, amount, paid_from_account_id, paid_to,
+             counterparty_id, payment_status, payment_method, reference_no, remarks)
+            VALUES (?, 'Staff Salary', ?, ?, ?, ?, ?, 'Paid', ?, ?, ?)
+            """,
+            (
+                pay_date, f"Salary expense for {staff_name} — {month}", str(gross_salary),
+                account_id, staff_name, teacher_id, payment_method,
+                voucher_val, exp_remarks,
+            ),
+        )
+        db.add_ledger(
+            conn, pay_date, account_id, "OUT", float(net), "Salary Payout",
+            salary_id, f"Salary payment for {month}",
+            voucher_val, rem_val,
+        )
+        services.staff_finance.record_payment(
+            conn, teacher_id, pay_date, "Salary Payment", float(net),
+            "Salary Payout", salary_id, account_id,
+            f"Salary payment for {month}", voucher_val,
+            rem_val,
+        )
+
+        if advance > 0:
+            advances = conn.execute(
+                "SELECT * FROM teacher_advances WHERE teacher_id=? AND status IN ('Outstanding','Partially Recovered') ORDER BY advance_date, id",
+                (teacher_id,),
+            ).fetchall()
+            rem = advance
+            updates = []
+            for adv in advances:
+                if rem <= 0:
+                    break
+                outstanding = Decimal(str(adv["amount"])) - Decimal(str(adv["recovered_amount"]))
+                applied = min(outstanding, rem)
+                new_rec = Decimal(str(adv["recovered_amount"])) + applied
+                stat = "Fully Recovered" if new_rec >= Decimal(str(adv["amount"])) else "Partially Recovered"
+                updates.append((str(new_rec), stat, adv["id"]))
+                rem -= applied
+            if updates:
+                conn.executemany("UPDATE teacher_advances SET recovered_amount=?, status=? WHERE id=?", updates)
+                rec = advance - rem
+                services.staff_finance.record_payment(
+                    conn, teacher_id, pay_date, "Advance Recovery", float(rec),
+                    "Salary Payout", salary_id, None,
+                    f"Advance recovery through salary — {month}",
+                    voucher_val, rem_val,
+                )
+
+    def _reverse_salary_payment(conn, salary_id: int, teacher_id: int):
+        adv_txs = conn.execute(
+            "SELECT id, amount FROM staff_payment_transactions WHERE source_type='Salary Payout' AND source_id=? AND transaction_type='Advance Recovery'",
+            (salary_id,),
+        ).fetchall()
+        for tx in adv_txs:
+            recovered = Decimal(str(tx["amount"]))
+            if recovered > 0:
+                advances = conn.execute(
+                    "SELECT id, amount, recovered_amount FROM teacher_advances WHERE teacher_id=? AND recovered_amount > 0 ORDER BY advance_date DESC, id DESC",
+                    (teacher_id,),
+                ).fetchall()
+                rem = recovered
+                for adv in advances:
+                    if rem <= 0:
+                        break
+                    curr_rec = Decimal(str(adv["recovered_amount"]))
+                    restoring = min(curr_rec, rem)
+                    new_rec = curr_rec - restoring
+                    new_status = "Partially Recovered" if new_rec > 0 else "Outstanding"
+                    conn.execute("UPDATE teacher_advances SET recovered_amount=?, status=? WHERE id=?", (str(new_rec), new_status, adv["id"]))
+                    rem -= restoring
+
+        conn.execute("DELETE FROM staff_payment_transactions WHERE source_type='Salary Payout' AND source_id=?", (salary_id,))
+        conn.execute("DELETE FROM ledger WHERE source_type='Salary Payout' AND source_id=?", (salary_id,))
+        conn.execute(
+            "DELETE FROM expense_records WHERE category='Staff Salary' AND (counterparty_id=? OR remarks LIKE ?)",
+            (teacher_id, f"%[SAL-{salary_id}]%"),
+        )
+
     @app.get("/api/salary")
-    def list_salary_payouts(_user=Depends(require_any("payroll.manage", "finance.manage"))):
+    def list_salary_payouts(month: Optional[str] = None, status: Optional[str] = None, _user=Depends(require_any("payroll.manage", "finance.manage"))):
+        where = []
+        params = []
+        if month:
+            where.append("sp.salary_month = ?")
+            params.append(month.strip())
+        if status:
+            where.append("sp.status = ?")
+            params.append(status.strip())
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
         rows = db.query(
-            "SELECT sp.*, t.teacher_name, t.staff_type, a.account_name "
-            "FROM salary_payouts sp "
-            "JOIN teachers t ON t.id=sp.teacher_id "
-            "JOIN accounts a ON a.id=sp.paid_from_account_id "
-            "ORDER BY sp.salary_month DESC, sp.payment_date DESC, sp.id DESC"
+            f"""
+            SELECT sp.*, t.teacher_name, t.staff_type, t.salary_type, t.basic_salary as staff_rate, a.account_name
+            FROM salary_payouts sp
+            JOIN teachers t ON t.id=sp.teacher_id
+            JOIN accounts a ON a.id=sp.paid_from_account_id
+            {where_sql}
+            ORDER BY sp.salary_month DESC, sp.payment_date DESC, sp.id DESC
+            """,
+            params,
         )
         return records(rows)
+
+    @app.get("/api/salary/{salary_id}")
+    def get_salary_payout(salary_id: int, _user=Depends(require_any("payroll.manage", "finance.manage", "portal.staff"))):
+        row = db.query_one(
+            """
+            SELECT sp.*, t.teacher_name, t.staff_type, t.salary_type, t.basic_salary as staff_rate, a.account_name
+            FROM salary_payouts sp
+            JOIN teachers t ON t.id=sp.teacher_id
+            JOIN accounts a ON a.id=sp.paid_from_account_id
+            WHERE sp.id=?
+            """,
+            (salary_id,),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Salary payout record not found.")
+        return dict(row)
 
     @app.post("/api/salary/calculate")
     def calculate_salary_attendance(payload: SalaryCalculateInput, _user=Depends(require_any("payroll.manage", "finance.manage"))):
         month = validate_month(payload.salary_month, "Salary month")
-        summary = services.attendance.staff_month_summary(payload.teacher_id, month)
-        routine = services.attendance.teacher_period_summary(payload.teacher_id, month)
-        adv_row = db.query_one(
-            "SELECT COALESCE(SUM(amount - recovered_amount), 0) total_advance "
-            "FROM teacher_advances WHERE teacher_id=? AND status IN ('Outstanding', 'Partially Recovered')",
-            (payload.teacher_id,),
-        )
-        teacher_row = db.query_one("SELECT salary_type, basic_salary FROM teachers WHERE id=?", (payload.teacher_id,))
-        return {
-            "summary": summary,
-            "scheduled_classes": routine["scheduled_classes"],
-            "outstanding_advance": float(adv_row["total_advance"] if adv_row else 0),
-            "salary_type": teacher_row["salary_type"] if teacher_row else "Monthly Salary",
-            "basic_salary": float(teacher_row["basic_salary"] if teacher_row else 0),
-        }
+        return _calc_staff_salary(payload.teacher_id, month)
 
     @app.post("/api/salary", status_code=201)
     def create_salary_payout(payload: SalaryPayoutInput, _user=Depends(require_any("payroll.manage", "finance.manage"))):
@@ -3068,7 +4372,8 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
         if net < 0:
             raise HTTPException(status_code=422, detail="Net salary cannot be negative.")
 
-        if db.account_balance(payload.paid_from_account_id) < net:
+        is_paid = (payload.status or "Paid") == "Paid"
+        if is_paid and db.account_balance(payload.paid_from_account_id) < net:
             raise HTTPException(status_code=422, detail="Paid from account has insufficient balance.")
 
         existing = db.query_one("SELECT id FROM salary_payouts WHERE teacher_id=? AND salary_month=?", (payload.teacher_id, month))
@@ -3076,6 +4381,7 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail="Salary payout for this staff member and month already exists.")
 
         def callback(conn):
+            payout_status = "Paid" if is_paid else "Draft"
             cur = conn.execute(
                 """
                 INSERT INTO salary_payouts
@@ -3084,73 +4390,320 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
                  attendance_days, working_hours, class_count,
                  payment_date, paid_from_account_id, payment_method,
                  voucher_no, status, remarks)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Paid', ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     payload.teacher_id, month, str(basic), str(extra), str(bonus),
                     str(allowance), str(advance), str(other), str(net),
                     payload.attendance_days, str(payload.working_hours), payload.class_count,
                     pay_date, payload.paid_from_account_id, payload.payment_method,
-                    payload.voucher_no.strip(), payload.remarks.strip(),
+                    payload.voucher_no.strip(), payout_status, payload.remarks.strip(),
                 ),
             )
             salary_id = cur.lastrowid
-            staff_row = conn.execute("SELECT teacher_name FROM teachers WHERE id=?", (payload.teacher_id,)).fetchone()
-            staff_name = staff_row["teacher_name"] if staff_row else "Staff member"
-            gross_salary = basic + extra + bonus + allowance
+            if is_paid:
+                _record_salary_payment(
+                    conn, salary_id, payload.teacher_id, month, pay_date,
+                    payload.paid_from_account_id, payload.payment_method,
+                    payload.voucher_no, payload.remarks,
+                    basic, extra, bonus, allowance, advance, other, net
+                )
+            return salary_id
+        return {"id": db.transaction(callback)}
+
+    @app.post("/api/salary/generate-month")
+    def generate_month_payroll(payload: GeneratePayrollMonthInput, _user=Depends(require_any("payroll.manage", "finance.manage"))):
+        month = validate_month(payload.salary_month, "Salary month")
+        pay_date = validate_date(payload.payment_date, "Payment date", date_format=config.date_format)
+        teachers = db.query("SELECT * FROM teachers WHERE status='Active' ORDER BY id")
+        if not teachers:
+            raise HTTPException(status_code=400, detail="No active staff members found.")
+
+        is_paid = (payload.status or "Draft") == "Paid"
+
+        def callback(conn):
+            created_count = 0
+            updated_count = 0
+            skipped_count = 0
+
+            for t in teachers:
+                tid = t["id"]
+                calc = _calc_staff_salary(tid, month)
+                basic = Decimal(str(calc["suggested_basic"]))
+                extra = Decimal(str(calc["suggested_extra"]))
+                bonus = Decimal("0.00")
+                allowance = Decimal("0.00")
+                advance = Decimal(str(calc["suggested_advance_deduction"]))
+                other = Decimal("0.00")
+                net = Decimal(str(calc["net_total"]))
+                att_days = int(calc.get("summary", {}).get("days", 0))
+                hours = float(calc.get("summary", {}).get("hours", 0.0))
+                class_cnt = int(calc.get("payable_classes", 0))
+
+                existing = conn.execute("SELECT id, status FROM salary_payouts WHERE teacher_id=? AND salary_month=?", (tid, month)).fetchone()
+                if existing:
+                    if not payload.overwrite:
+                        skipped_count += 1
+                        continue
+
+                    salary_id = existing["id"]
+                    prev_status = existing["status"]
+
+                    if prev_status == "Paid":
+                        _reverse_salary_payment(conn, salary_id, tid)
+
+                    conn.execute(
+                        """
+                        UPDATE salary_payouts
+                        SET basic_salary=?, extra_payment=?, bonus=?, allowance=?,
+                            advance_deduction=?, other_deduction=?, net_salary=?,
+                            attendance_days=?, working_hours=?, class_count=?,
+                            payment_date=?, paid_from_account_id=?, payment_method=?,
+                            voucher_no=?, status=?, remarks=?
+                        WHERE id=?
+                        """,
+                        (
+                            str(basic), str(extra), str(bonus), str(allowance),
+                            str(advance), str(other), str(net),
+                            att_days, str(hours), class_cnt,
+                            pay_date, payload.paid_from_account_id, payload.payment_method,
+                            payload.voucher_no.strip(), "Paid" if is_paid else "Draft",
+                            payload.remarks.strip(), salary_id,
+                        )
+                    )
+                    if is_paid:
+                        _record_salary_payment(
+                            conn, salary_id, tid, month, pay_date,
+                            payload.paid_from_account_id, payload.payment_method,
+                            payload.voucher_no, payload.remarks,
+                            basic, extra, bonus, allowance, advance, other, net
+                        )
+                    updated_count += 1
+                else:
+                    cur = conn.execute(
+                        """
+                        INSERT INTO salary_payouts
+                        (teacher_id, salary_month, basic_salary, extra_payment, bonus,
+                         allowance, advance_deduction, other_deduction, net_salary,
+                         attendance_days, working_hours, class_count,
+                         payment_date, paid_from_account_id, payment_method,
+                         voucher_no, status, remarks)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            tid, month, str(basic), str(extra), str(bonus),
+                            str(allowance), str(advance), str(other), str(net),
+                            att_days, str(hours), class_cnt,
+                            pay_date, payload.paid_from_account_id, payload.payment_method,
+                            payload.voucher_no.strip(), "Paid" if is_paid else "Draft",
+                            payload.remarks.strip(),
+                        )
+                    )
+                    salary_id = cur.lastrowid
+                    if is_paid:
+                        _record_salary_payment(
+                            conn, salary_id, tid, month, pay_date,
+                            payload.paid_from_account_id, payload.payment_method,
+                            payload.voucher_no, payload.remarks,
+                            basic, extra, bonus, allowance, advance, other, net
+                        )
+                    created_count += 1
+
+            return {
+                "created": created_count,
+                "updated": updated_count,
+                "skipped": skipped_count,
+                "total": len(teachers),
+                "month": month,
+                "status": "Paid" if is_paid else "Draft"
+            }
+        return db.transaction(callback)
+
+    @app.post("/api/salary/{salary_id}/regenerate")
+    def regenerate_salary_payout(salary_id: int, _user=Depends(require_any("payroll.manage", "finance.manage"))):
+        row = db.query_one("SELECT * FROM salary_payouts WHERE id=?", (salary_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="Salary payout record not found.")
+
+        tid = row["teacher_id"]
+        month = row["salary_month"]
+        calc = _calc_staff_salary(tid, month)
+        basic = Decimal(str(calc["suggested_basic"]))
+        extra = Decimal(str(calc["suggested_extra"]))
+        bonus = Decimal(str(row["bonus"] or 0))
+        allowance = Decimal(str(row["allowance"] or 0))
+        advance = Decimal(str(calc["suggested_advance_deduction"]))
+        other = Decimal(str(row["other_deduction"] or 0))
+        net = max(Decimal("0.00"), basic + extra + bonus + allowance - advance - other)
+        att_days = int(calc.get("summary", {}).get("days", 0))
+        hours = float(calc.get("summary", {}).get("hours", 0.0))
+        class_cnt = int(calc.get("payable_classes", 0))
+
+        def callback(conn):
+            prev_status = row["status"]
+            if prev_status == "Paid":
+                _reverse_salary_payment(conn, salary_id, tid)
 
             conn.execute(
                 """
-                INSERT INTO expense_records
-                (expense_date, category, particular, amount, paid_from_account_id, paid_to,
-                 payment_status, payment_method, reference_no, remarks)
-                VALUES (?, 'Staff Salary', ?, ?, ?, ?, 'Paid', ?, ?, ?)
+                UPDATE salary_payouts
+                SET basic_salary=?, extra_payment=?, advance_deduction=?, net_salary=?,
+                    attendance_days=?, working_hours=?, class_count=?
+                WHERE id=?
                 """,
                 (
-                    pay_date, f"Salary expense for {staff_name} — {month}", str(gross_salary),
-                    payload.paid_from_account_id, staff_name, payload.payment_method,
-                    payload.voucher_no.strip(), payload.remarks.strip(),
-                ),
+                    str(basic), str(extra), str(advance), str(net),
+                    att_days, str(hours), class_cnt, salary_id,
+                )
             )
-            db.add_ledger(
-                conn, pay_date, payload.paid_from_account_id, "OUT", float(net), "Salary Payout",
-                salary_id, f"Salary payment for {month}",
-                payload.voucher_no.strip(), payload.remarks.strip(),
-            )
-            services.staff_finance.record_payment(
-                conn, payload.teacher_id, pay_date, "Salary Payment", float(net),
-                "Salary Payout", salary_id, payload.paid_from_account_id,
-                f"Salary payment for {month}", payload.voucher_no.strip(),
-                payload.remarks.strip(),
+            if prev_status == "Paid":
+                _record_salary_payment(
+                    conn, salary_id, tid, month, row["payment_date"],
+                    row["paid_from_account_id"], row["payment_method"],
+                    row["voucher_no"] or "", row["remarks"] or "",
+                    basic, extra, bonus, allowance, advance, other, net
+                )
+            return salary_id
+
+        db.transaction(callback)
+        updated_row = db.query_one(
+            "SELECT sp.*, t.teacher_name, t.staff_type, t.salary_type, a.account_name "
+            "FROM salary_payouts sp "
+            "JOIN teachers t ON t.id=sp.teacher_id "
+            "JOIN accounts a ON a.id=sp.paid_from_account_id "
+            "WHERE sp.id=?",
+            (salary_id,)
+        )
+        return dict(updated_row)
+
+    @app.put("/api/salary/{salary_id}")
+    def update_salary_payout(salary_id: int, payload: SalaryPayoutUpdateInput, _user=Depends(require_any("payroll.manage", "finance.manage"))):
+        row = db.query_one("SELECT * FROM salary_payouts WHERE id=?", (salary_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="Salary payout record not found.")
+
+        pay_date = validate_date(payload.payment_date, "Payment date", date_format=config.date_format)
+        basic = Decimal(str(payload.basic_salary))
+        extra = Decimal(str(payload.extra_payment))
+        bonus = Decimal(str(payload.bonus))
+        allowance = Decimal(str(payload.allowance))
+        advance = Decimal(str(payload.advance_deduction))
+        other = Decimal(str(payload.other_deduction))
+        net = basic + extra + bonus + allowance - advance - other
+        if net < 0:
+            raise HTTPException(status_code=422, detail="Net salary cannot be negative.")
+
+        new_status = payload.status or "Paid"
+        if new_status == "Paid" and row["status"] != "Paid":
+            if db.account_balance(payload.paid_from_account_id) < net:
+                raise HTTPException(status_code=422, detail="Paid from account has insufficient balance.")
+
+        tid = row["teacher_id"]
+        month = row["salary_month"]
+
+        def callback(conn):
+            prev_status = row["status"]
+            if prev_status == "Paid":
+                _reverse_salary_payment(conn, salary_id, tid)
+
+            conn.execute(
+                """
+                UPDATE salary_payouts
+                SET basic_salary=?, extra_payment=?, bonus=?, allowance=?,
+                    advance_deduction=?, other_deduction=?, net_salary=?,
+                    attendance_days=?, working_hours=?, class_count=?,
+                    payment_date=?, paid_from_account_id=?, payment_method=?,
+                    voucher_no=?, status=?, remarks=?
+                WHERE id=?
+                """,
+                (
+                    str(basic), str(extra), str(bonus), str(allowance),
+                    str(advance), str(other), str(net),
+                    payload.attendance_days, str(payload.working_hours), payload.class_count,
+                    pay_date, payload.paid_from_account_id, payload.payment_method,
+                    payload.voucher_no.strip(), new_status, payload.remarks.strip(), salary_id,
+                )
             )
 
-            if advance > 0:
-                advances = conn.execute(
-                    "SELECT * FROM teacher_advances WHERE teacher_id=? AND status IN ('Outstanding','Partially Recovered') ORDER BY advance_date, id",
-                    (payload.teacher_id,),
-                ).fetchall()
-                rem = advance
-                updates = []
-                for adv in advances:
-                    if rem <= 0:
-                        break
-                    outstanding = Decimal(str(adv["amount"])) - Decimal(str(adv["recovered_amount"]))
-                    applied = min(outstanding, rem)
-                    new_rec = Decimal(str(adv["recovered_amount"])) + applied
-                    stat = "Fully Recovered" if new_rec >= Decimal(str(adv["amount"])) else "Partially Recovered"
-                    updates.append((str(new_rec), stat, adv["id"]))
-                    rem -= applied
-                if updates:
-                    conn.executemany("UPDATE teacher_advances SET recovered_amount=?, status=? WHERE id=?", updates)
-                    rec = advance - rem
-                    services.staff_finance.record_payment(
-                        conn, payload.teacher_id, pay_date, "Advance Recovery", float(rec),
-                        "Salary Payout", salary_id, None,
-                        f"Advance recovery through salary — {month}",
-                        payload.voucher_no.strip(), payload.remarks.strip(),
-                    )
+            if new_status == "Paid":
+                _record_salary_payment(
+                    conn, salary_id, tid, month, pay_date,
+                    payload.paid_from_account_id, payload.payment_method,
+                    payload.voucher_no, payload.remarks,
+                    basic, extra, bonus, allowance, advance, other, net
+                )
             return salary_id
-        return {"id": db.transaction(callback)}
+
+        db.transaction(callback)
+        updated = db.query_one(
+            "SELECT sp.*, t.teacher_name, t.staff_type, t.salary_type, a.account_name "
+            "FROM salary_payouts sp "
+            "JOIN teachers t ON t.id=sp.teacher_id "
+            "JOIN accounts a ON a.id=sp.paid_from_account_id "
+            "WHERE sp.id=?",
+            (salary_id,)
+        )
+        return dict(updated)
+
+    @app.delete("/api/salary/{salary_id}")
+    def delete_salary_payout(salary_id: int, _user=Depends(require_any("payroll.manage", "finance.manage"))):
+        row = db.query_one("SELECT * FROM salary_payouts WHERE id=?", (salary_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="Salary payout record not found.")
+
+        tid = row["teacher_id"]
+
+        def callback(conn):
+            if row["status"] == "Paid":
+                _reverse_salary_payment(conn, salary_id, tid)
+            conn.execute("DELETE FROM salary_payouts WHERE id=?", (salary_id,))
+
+        db.transaction(callback)
+        return {"success": True, "message": f"Salary payout #{salary_id} deleted successfully."}
+
+    @app.post("/api/salary/disburse-month")
+    def disburse_month_payroll(payload: DisbursePayrollMonthInput, _user=Depends(require_any("payroll.manage", "finance.manage"))):
+        month = validate_month(payload.salary_month, "Salary month")
+        pay_date = validate_date(payload.payment_date, "Payment date", date_format=config.date_format)
+        drafts = db.query("SELECT * FROM salary_payouts WHERE salary_month=? AND status='Draft'", (month,))
+        if not drafts:
+            raise HTTPException(status_code=400, detail=f"No draft salary payouts found for month {month}.")
+
+        total_net = sum(Decimal(str(d["net_salary"])) for d in drafts)
+        if db.account_balance(payload.paid_from_account_id) < total_net:
+            raise HTTPException(status_code=422, detail=f"Paid from account has insufficient balance (Needs Rs. {total_net:,.2f}).")
+
+        def callback(conn):
+            for d in drafts:
+                salary_id = d["id"]
+                tid = d["teacher_id"]
+                basic = Decimal(str(d["basic_salary"]))
+                extra = Decimal(str(d["extra_payment"]))
+                bonus = Decimal(str(d["bonus"]))
+                allowance = Decimal(str(d["allowance"]))
+                advance = Decimal(str(d["advance_deduction"]))
+                other = Decimal(str(d["other_deduction"]))
+                net = Decimal(str(d["net_salary"]))
+                voucher = payload.voucher_no or d["voucher_no"] or f"SAL-{salary_id}"
+
+                conn.execute(
+                    """
+                    UPDATE salary_payouts
+                    SET status='Paid', payment_date=?, paid_from_account_id=?, payment_method=?, voucher_no=?
+                    WHERE id=?
+                    """,
+                    (pay_date, payload.paid_from_account_id, payload.payment_method, voucher, salary_id)
+                )
+                _record_salary_payment(
+                    conn, salary_id, tid, month, pay_date,
+                    payload.paid_from_account_id, payload.payment_method,
+                    voucher, d["remarks"] or "",
+                    basic, extra, bonus, allowance, advance, other, net
+                )
+            return len(drafts)
+
+        count = db.transaction(callback)
+        return {"success": True, "disbursed_count": count, "total_amount": float(total_net), "month": month}
 
     @app.get("/api/salary/{salary_id}/payslip/pdf")
     def download_payslip_pdf(salary_id: int, _user=Depends(require_any("payroll.manage", "finance.manage", "portal.staff"))):
@@ -3214,6 +4767,64 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
             }
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Backup failed: {exc}")
+
+    @app.get("/api/system/backups")
+    def list_database_backups(_user=Depends(require_any("administration.manage", "backup.manage"))):
+        backup_dir = config.backup_directory
+        if not backup_dir.exists():
+            return []
+        items = []
+        for p in sorted(backup_dir.glob("elh_*.*"), key=lambda f: f.stat().st_mtime, reverse=True):
+            if p.suffix.lower() in {".db", ".sql", ".sqlite"}:
+                st = p.stat()
+                items.append({
+                    "filename": p.name,
+                    "size_bytes": st.st_size,
+                    "created_at": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                })
+        return items
+
+    @app.get("/api/system/backups/{filename}/download")
+    def download_database_backup(filename: str, _user=Depends(require_any("administration.manage", "backup.manage"))):
+        if ".." in filename or "/" in filename or "\\" in filename:
+            raise HTTPException(status_code=400, detail="Invalid backup filename.")
+        target = config.backup_directory / filename
+        if not target.is_file():
+            raise HTTPException(status_code=404, detail="Backup file not found.")
+        return FileResponse(
+            target,
+            filename=target.name,
+            media_type="application/octet-stream",
+        )
+
+    @app.get("/api/devices/printer")
+    def get_pos_printer_status(_user=Depends(require_any("devices.manage", "administration.manage"))):
+        printer = getattr(services.printing, "printer", None)
+        ok, detail = False, "No printer service"
+        if printer:
+            try:
+                ok, detail = printer.health()
+            except Exception as exc:
+                ok, detail = False, str(exc)
+        return {
+            "driver": config.pos_printer_driver,
+            "host": config.pos_printer_host or "Not configured",
+            "port": config.pos_printer_port,
+            "width": config.pos_printer_chars_per_line,
+            "connected": ok,
+            "status_detail": detail,
+        }
+
+    @app.post("/api/devices/printer/test")
+    def test_pos_printer_connection(_user=Depends(require_any("devices.manage", "administration.manage"))):
+        printer = getattr(services.printing, "printer", None)
+        if not printer:
+            raise HTTPException(status_code=400, detail="POS printer service is not initialized.")
+        try:
+            ok, detail = printer.health()
+            return {"ok": ok, "detail": detail}
+        except Exception as exc:
+            return {"ok": False, "detail": str(exc)}
 
     # -----------------------------------------------------------------------
     # Proxy Class Management Helpers & Endpoints
@@ -3550,6 +5161,9 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
         all_teachers = records(db.query(
             "SELECT id, teacher_name, subject, contact, staff_type FROM teachers WHERE status='Active' AND staff_type='Teaching' ORDER BY teacher_name"
         ))
+        all_ts_map = services.subjects.get_all_teacher_subjects()
+        routine_subj_id = routine.get("subject_id")
+        routine_subj_words = [w for w in routine_subj.split() if len(w) > 2]
 
         busy_rows = db.query(
             "SELECT DISTINCT teacher_id FROM class_routines WHERE day_of_week = ? AND period_label = ? AND status = 'Active' AND teacher_id IS NOT NULL",
@@ -3568,14 +5182,43 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
             tid = int(t["id"])
             if orig_tid and tid == int(orig_tid):
                 continue
-            t_subj = str(t.get("subject") or "").strip().lower()
 
-            subject_match = bool(
-                routine_subj and t_subj and (
-                    routine_subj in t_subj or t_subj in routine_subj or
-                    any(w in t_subj for w in routine_subj.split() if len(w) > 2)
-                )
-            )
+            ts_records = all_ts_map.get(tid, [])
+            assigned_subj_ids = {ts.subject_id for ts in ts_records}
+            assigned_subj_names = [ts.subject_name for ts in ts_records]
+
+            # Also include any subjects listed in t["subject"] text field
+            raw_t_subj = str(t.get("subject") or "").strip()
+            text_subjs = [s.strip() for s in re.split(r"[,;/]+", raw_t_subj) if s.strip()]
+            for s in text_subjs:
+                if not any(s.lower() == existing.lower() for existing in assigned_subj_names):
+                    assigned_subj_names.append(s)
+
+            # Check match against ANY of teacher's subjects
+            subject_match = False
+            matched_subject_name = ""
+
+            # 1. Exact subject_id match
+            if routine_subj_id and int(routine_subj_id) in assigned_subj_ids:
+                subject_match = True
+                matched_ts = next((ts for ts in ts_records if ts.subject_id == int(routine_subj_id)), None)
+                matched_subject_name = matched_ts.subject_name if matched_ts else routine_subj
+
+            # 2. Check each assigned subject name against routine_subj
+            if not subject_match and routine_subj:
+                for s_name in assigned_subj_names:
+                    s_lower = s_name.strip().lower()
+                    if (
+                        s_lower == routine_subj
+                        or routine_subj in s_lower
+                        or s_lower in routine_subj
+                        or any(w in s_lower for w in routine_subj_words)
+                        or any(w in routine_subj for w in s_lower.split() if len(w) > 2)
+                    ):
+                        subject_match = True
+                        matched_subject_name = s_name
+                        break
+
             is_busy = tid in busy_ids
             is_absent = tid in absent_ids
 
@@ -3587,10 +5230,15 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
             if not is_absent:
                 score += 20
 
+            display_subj = ", ".join(assigned_subj_names) if assigned_subj_names else (raw_t_subj or "General")
+
             suggestions.append({
                 "id": tid,
                 "teacher_name": t["teacher_name"],
-                "subject": t.get("subject") or "General",
+                "subject": display_subj,
+                "subjects": assigned_subj_names,
+                "subject_ids": list(assigned_subj_ids),
+                "matched_subject": matched_subject_name,
                 "contact": t.get("contact") or "",
                 "subject_match": subject_match,
                 "is_busy": is_busy,
@@ -3654,10 +5302,200 @@ def create_app(app_config: AppConfig | None = None) -> FastAPI:
         )
         return {"ok": True}
 
-    app.mount("/assets", StaticFiles(directory=static_dir), name="assets")
+    def sync_auth(
+        x_sync_token: str | None = Header(default=None, alias="X-Sync-Token"),
+        authorization: str | None = Header(default=None),
+    ) -> bool:
+        configured_token = os.environ.get("ELH_SYNC_API_TOKEN", "").strip() or (config.secret_key or "").strip()
+        if configured_token and x_sync_token and x_sync_token.strip() == configured_token:
+            return True
+        if authorization:
+            token = authorization.removeprefix("Bearer ").strip()
+            user_session = token_manager.decode(token)
+            if user_session and user_session.role in ("super_admin", "admin"):
+                return True
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing sync authentication token.",
+        )
+
+    @app.get("/api/sync/status")
+    def get_sync_status(_auth=Depends(sync_auth)):
+        row = db.query_one("SELECT COUNT(*) AS cnt FROM pos_print_queue WHERE status = 'pending'")
+        pending_jobs = row["cnt"] if row else 0
+        log_row = db.query_one("SELECT COUNT(*) AS cnt FROM attendance_logs")
+        total_logs = log_row["cnt"] if log_row else 0
+        return {
+            "ok": True,
+            "server_time": datetime.now().isoformat(),
+            "pending_print_jobs": pending_jobs,
+            "total_attendance_logs": total_logs,
+        }
+
+    @app.get("/api/sync/pos-print-queue/pull")
+    def pull_pos_print_queue(_auth=Depends(sync_auth)):
+        row = db.query_one(
+            "SELECT id, receipt_number, customer_name, title, payload_json, attempts "
+            "FROM pos_print_queue WHERE status = 'pending' ORDER BY id ASC LIMIT 1"
+        )
+        if not row:
+            return {"job": None}
+        job_id = row["id"]
+        db.execute(
+            "UPDATE pos_print_queue SET attempts = attempts + 1 WHERE id = ?",
+            (job_id,)
+        )
+        try:
+            payload = json.loads(row["payload_json"])
+        except Exception:
+            payload = {}
+        return {
+            "job": {
+                "id": job_id,
+                "receipt_number": row["receipt_number"],
+                "customer_name": row["customer_name"],
+                "title": row["title"],
+                "payload": payload,
+            }
+        }
+
+    @app.post("/api/sync/pos-print-queue/{job_id}/status")
+    def update_pos_print_status(job_id: int, payload: dict = Body(...), _auth=Depends(sync_auth)):
+        job_status = payload.get("status", "printed")
+        err = payload.get("error_message")
+        if job_status == "printed":
+            db.execute(
+                "UPDATE pos_print_queue SET status = 'printed', printed_at = CURRENT_TIMESTAMP, error_message = NULL WHERE id = ?",
+                (job_id,)
+            )
+        else:
+            db.execute(
+                "UPDATE pos_print_queue SET status = 'failed', error_message = ? WHERE id = ?",
+                (str(err or "Print error"), job_id)
+            )
+        return {"ok": True, "job_id": job_id, "status": job_status}
+
+    @app.post("/api/sync/device-attendance-push")
+    def push_device_attendance(payload: dict = Body(...), _auth=Depends(sync_auth)):
+        from elh.models import AttendanceEvent
+        raw_events = payload.get("events", [])
+        if not raw_events:
+            return {"ok": True, "received": 0, "saved": 0, "unmapped": 0}
+        parsed_events = []
+        for item in raw_events:
+            dt = item.get("occurred_at")
+            if isinstance(dt, str):
+                try:
+                    dt = datetime.fromisoformat(dt)
+                except ValueError:
+                    continue
+            elif not isinstance(dt, datetime):
+                continue
+            parsed_events.append(
+                AttendanceEvent(
+                    device_user_id=str(item.get("device_user_id", "")).strip(),
+                    occurred_at=dt,
+                    event_type=str(item.get("event_type", "Punch")).strip() or "Punch",
+                    device_serial=str(item.get("device_serial", "")).strip(),
+                    verification_type=str(item.get("verification_type", "Biometric")).strip() or "Biometric",
+                )
+            )
+        if not parsed_events:
+            return {"ok": True, "received": 0, "saved": 0, "unmapped": 0}
+        mappings = services.attendance.repository.mappings_for([e.device_user_id for e in parsed_events])
+        unmapped = sum(1 for e in parsed_events if e.device_user_id not in mappings)
+        saved = services.attendance.repository.save_events(parsed_events, mappings)
+        return {"ok": True, "received": len(parsed_events), "saved": saved, "unmapped": unmapped}
+
+    @app.get("/api/sync/device-users")
+    def get_sync_device_users(_auth=Depends(sync_auth)):
+        names = services.attendance.repository.registered_device_names()
+        return {"ok": True, "device_names": names}
+
+    NO_CACHE_HEADERS = {
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    }
+
+    @app.get("/assets/app.js", include_in_schema=False)
+    def legacy_app_js():
+        f = (ROOT_DIR / "web" / "app.js")
+        if f.exists():
+            return FileResponse(f, media_type="application/javascript", headers=NO_CACHE_HEADERS)
+        raise HTTPException(status_code=404)
+
+    @app.get("/assets/styles.css", include_in_schema=False)
+    def legacy_styles_css():
+        f = (ROOT_DIR / "web" / "styles.css")
+        if f.exists():
+            return FileResponse(f, media_type="text/css", headers=NO_CACHE_HEADERS)
+        raise HTTPException(status_code=404)
+
+    app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    @app.get("/manifest.webmanifest", include_in_schema=False)
+    def manifest():
+        for candidate in [
+            static_dir / "manifest.webmanifest",
+            ROOT_DIR / "web" / "manifest.webmanifest",
+            ROOT_DIR / "frontend" / "public" / "manifest.webmanifest",
+        ]:
+            if candidate.exists():
+                return FileResponse(candidate, media_type="application/manifest+json")
+        raise HTTPException(status_code=404)
+
+    @app.get("/sw.js", include_in_schema=False)
+    def service_worker():
+        # Ensure any stale cached service workers unregister and wipe stale cache storage
+        cleanup_script = (
+            "self.addEventListener('install', e => self.skipWaiting());\n"
+            "self.addEventListener('activate', e => {\n"
+            "  caches.keys().then(keys => Promise.all(keys.map(k => caches.delete(k))));\n"
+            "  self.registration.unregister();\n"
+            "  self.clients.claim();\n"
+            "});\n"
+        )
+        return Response(
+            content=cleanup_script,
+            media_type="application/javascript",
+            headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache, no-store, must-revalidate"}
+        )
+
+    @app.get("/icons/{icon_name}", include_in_schema=False)
+    def get_icon(icon_name: str):
+        for d in [static_dir / "icons", ROOT_DIR / "web" / "icons", ROOT_DIR / "frontend" / "public" / "icons"]:
+            f = d / icon_name
+            if f.exists():
+                return FileResponse(f, media_type="image/png")
+        raise HTTPException(status_code=404)
+
+    @app.get("/images/{image_name}", include_in_schema=False)
+    def get_image(image_name: str):
+        for d in [static_dir / "images", ROOT_DIR / "web" / "images", ROOT_DIR / "frontend" / "public" / "images"]:
+            f = d / image_name
+            if f.exists():
+                return FileResponse(f)
+        raise HTTPException(status_code=404)
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon():
+        for candidate in [
+            static_dir / "favicon.ico",
+            ROOT_DIR / "web" / "favicon.ico",
+            ROOT_DIR / "frontend" / "public" / "favicon.ico",
+        ]:
+            if candidate.exists():
+                return FileResponse(candidate)
+        for icon_d in [static_dir / "icons", ROOT_DIR / "web" / "icons", ROOT_DIR / "frontend" / "public" / "icons"]:
+            icon_f = icon_d / "favicon-64x64.png"
+            if icon_f.exists():
+                return FileResponse(icon_f, media_type="image/png")
+        raise HTTPException(status_code=404)
 
     @app.get("/", include_in_schema=False)
+    @app.get("/index.html", include_in_schema=False)
     def index():
-        return FileResponse(static_dir / "index.html")
+        return FileResponse(static_dir / "index.html", headers=NO_CACHE_HEADERS)
 
     return app

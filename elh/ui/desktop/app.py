@@ -57,19 +57,23 @@ from elh.ui.desktop.pages import (
     RoutinesPage,
     GradesPage,
     AcademicCalendarPage,
+    InquiriesPage,
+    ProxyClassesPage,
+    SubjectsPage,
 )
 
 # ---------------------------------------------------------------------------
 
 NAV_ICONS = {
-    "Dashboard": "📊", "AI Assistant": "🤖", "Tasks & Bugs": "📝", "Students": "🎓",
+    "Dashboard": "📊", "AI Assistant": "🤖", "Tasks & Bugs": "📝", "Admission Leads": "📥", "Students": "🎓",
     "Enrollments": "📋", "Due Bills": "🧾", "Certificates": "🏆",
     "Student Accounts": "👛", "Reports": "📄", "Courses": "📚",
-    "Schools": "🏫", "Staff": "👥", "Staff Advances": "💵",
+    "Schools": "🏫", "Staff": "👥", "Proxy Classes": "🔄", "Staff Advances": "💵",
     "Salary Payouts": "💰", "Income": "📈", "Expenses": "📉",
     "Accounts": "🏦", "Account Transfers": "🔄", "Ledger": "📒",
     "Attendance Device": "🕒", "POS Printer": "🖨", "Device Health": "🩺",
     "Class Routine": "🗓",
+    "Subjects & Electives": "📖",
     "Grades": "🔢",
     "Academic Calendar": "🗓",
 }
@@ -293,6 +297,7 @@ class ManagementApp(tk.Tk):
                 ("Dashboard", DashboardPage, "dashboard.view"),
                 ("AI Assistant", AssistantPage, "assistant.view"),
                 ("Tasks & Bugs", WorkItemsPage, "dashboard.view"),
+                ("Admission Leads", InquiriesPage, "dashboard.view"),
                 ("Reports", ReportsPage, "reports.view"),
             ]),
             ("ACADEMIC", [
@@ -302,6 +307,7 @@ class ManagementApp(tk.Tk):
                 ("Certificates", CertificatesPage, "certificates.manage"),
                 ("Student Accounts", StudentTransactionsPage, "billing.manage"),
                 ("Courses", CoursesPage, "master_data.manage"),
+                ("Subjects & Electives", SubjectsPage, "master_data.manage"),
                 ("Grades", GradesPage, "master_data.manage"),
                 ("Class Routine", RoutinesPage, "master_data.manage"),
                 ("Academic Calendar", AcademicCalendarPage, "master_data.manage"),
@@ -309,6 +315,7 @@ class ManagementApp(tk.Tk):
             ]),
             ("STAFF & PAYROLL", [
                 ("Staff", TeachersPage, "staff.manage"),
+                ("Proxy Classes", ProxyClassesPage, "staff.manage"),
                 ("Staff Advances", AdvancesPage, "payroll.manage"),
                 ("Salary Payouts", SalaryPage, "payroll.manage"),
             ]),

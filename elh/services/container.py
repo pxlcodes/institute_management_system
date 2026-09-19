@@ -21,6 +21,7 @@ from elh.core.settings import SettingsService
 from .staff_finance import StaffFinanceService
 from .automation import AutomationScheduler
 from .cms import CmsService
+from elh.repositories.academics import SubjectRepository
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class ServiceContainer:
     staff_finance: StaffFinanceService
     automation: AutomationScheduler
     cms: CmsService
+    subjects: SubjectRepository
 
     @classmethod
     def build(cls, config: AppConfig, db) -> "ServiceContainer":
@@ -97,7 +99,7 @@ class ServiceContainer:
         company_name = (profile["company_name"] if profile else None) or config.app_title
         currency_symbol = settings.get("currency_symbol", config.currency_symbol)
         notifications = NotificationService(db, config)
-        printing = PrintingService(create_receipt_printer(config))
+        printing = PrintingService(create_receipt_printer(config, db=db))
         attendance_service = AttendanceService(AttendanceRepository(db), create_attendance_device(config), settings)
         attendance_poller = AttendancePoller(
             attendance_service,
@@ -130,6 +132,7 @@ class ServiceContainer:
             staff_finance=StaffFinanceService(db),
             automation=automation,
             cms=CmsService(db),
+            subjects=SubjectRepository(db),
         )
         if settings.get_bool("sms_enabled", False):
             notifications.dispatch_async()

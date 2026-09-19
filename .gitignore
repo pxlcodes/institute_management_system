@@ -2,6 +2,7 @@
 .env.admin.tmp
 .env.*
 !.env.example
+!.env.cpanel.example
 .secret_key
 *.secret
 backups/
@@ -30,4 +31,6 @@ release/
 htmlcov/
 *.spec
 !packaging/*.spec
-
+frontend/node_modules/
+frontend/dist/
+web_dist/

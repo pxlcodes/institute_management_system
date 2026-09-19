@@ -248,16 +248,19 @@ class StudentProfileDialog(tk.Toplevel):
         notebook.pack(fill="both", expand=True)
 
         tab_enrollments = ttk.Frame(notebook, padding=8)
+        tab_subjects = ttk.Frame(notebook, padding=8)
         tab_finance = ttk.Frame(notebook, padding=8)
         tab_attendance = ttk.Frame(notebook, padding=8)
         tab_other = ttk.Frame(notebook, padding=8)
 
         notebook.add(tab_enrollments, text="  📚 Course Enrollments  ")
+        notebook.add(tab_subjects, text="  📖 Subjects & Electives  ")
         notebook.add(tab_finance, text="  💳 Account & Payments  ")
         notebook.add(tab_attendance, text="  🕒 Attendance Record  ")
         notebook.add(tab_other, text="  📜 Certificates & Logs  ")
 
         self._build_enrollments_tab(tab_enrollments)
+        self._build_subjects_tab(tab_subjects)
         self._build_finance_tab(tab_finance)
         self._build_attendance_tab(tab_attendance)
         self._build_other_tab(tab_other)
@@ -414,6 +417,122 @@ class StudentProfileDialog(tk.Toplevel):
                     e["status"],
                 ),
             )
+
+    def _build_subjects_tab(self, parent: ttk.Frame) -> None:
+        tb = ttk.Frame(parent)
+        tb.pack(fill="x", pady=(0, 6))
+
+        subjects_list = self.profile.get("subjects") or []
+        lbl = ttk.Label(tb, text=f"Assigned Subjects & Electives ({len(subjects_list)})", font=("Segoe UI", 10, "bold"))
+        lbl.pack(side="left", padx=4)
+
+        ttk.Button(tb, text="➕ Assign Subject / Elective…", style="Accent.TButton", command=self._open_assign_subject_dialog).pack(side="right", padx=4)
+        ttk.Button(tb, text="❌ Remove Selected", style="Danger.TButton", command=lambda: self._remove_selected_subject(subj_tree)).pack(side="right", padx=4)
+
+        cols = [
+            ("id", "ID", 50, "w"),
+            ("code", "Code", 100, "w"),
+            ("name", "Subject Name", 220, "w"),
+            ("type", "Enrollment Type", 130, "w"),
+            ("date", "Assigned Date", 110, "w"),
+            ("status", "Status", 90, "center"),
+            ("remarks", "Remarks", 200, "w"),
+        ]
+        subj_tree = self._create_tree(parent, cols, height=8)
+        for s in subjects_list:
+            subj_tree.insert(
+                "",
+                "end",
+                values=(
+                    s["id"],
+                    s["subject_code"],
+                    s["subject_name"],
+                    s.get("enrollment_type") or s.get("subject_type") or "Optional",
+                    s.get("assigned_date") or "-",
+                    s.get("status") or "Active",
+                    s.get("remarks") or "-",
+                ),
+            )
+
+    def _open_assign_subject_dialog(self) -> None:
+        dlg = tk.Toplevel(self)
+        dlg.title("Assign Subject to Student")
+        dlg.minsize(420, 260)
+        dlg.transient(self)
+        dlg.grab_set()
+
+        frame = ttk.Frame(dlg, padding=16)
+        frame.pack(fill="both", expand=True)
+
+        subjects = self.app.services.subjects.list_subjects(status="Active")
+        if not subjects:
+            messagebox.showwarning("No Subjects", "No active subjects available.", parent=dlg)
+            dlg.destroy()
+            return
+
+        subj_map = {f"{s.subject_name} ({s.subject_code})": s.id for s in subjects}
+        subj_var = tk.StringVar(value=list(subj_map.keys())[0])
+        type_var = tk.StringVar(value="Optional")
+        date_var = tk.StringVar(value=self.profile["student"].get("joining_date") or "")
+        remarks_var = tk.StringVar()
+
+        ttk.Label(frame, text="Subject *").grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Combobox(frame, textvariable=subj_var, values=list(subj_map.keys()), state="readonly", width=30).grid(row=0, column=1, sticky="w", padx=6, pady=4)
+
+        ttk.Label(frame, text="Enrollment Type *").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Combobox(frame, textvariable=type_var, values=["Optional", "Compulsory", "Elective", "Vocational"], state="readonly", width=20).grid(row=1, column=1, sticky="w", padx=6, pady=4)
+
+        ttk.Label(frame, text="Assigned Date").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=date_var, width=22).grid(row=2, column=1, sticky="w", padx=6, pady=4)
+
+        ttk.Label(frame, text="Remarks").grid(row=3, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=remarks_var, width=30).grid(row=3, column=1, sticky="w", padx=6, pady=4)
+
+        btn_bar = ttk.Frame(frame)
+        btn_bar.grid(row=4, column=0, columnspan=2, sticky="e", pady=(14, 0))
+
+        def save_assignment():
+            s_id = subj_map.get(subj_var.get())
+            if not s_id:
+                return
+            try:
+                self.app.services.subjects.assign_student_subject(
+                    student_id=self.student_id,
+                    subject_id=s_id,
+                    enrollment_type=type_var.get(),
+                    assigned_date=date_var.get().strip() or None,
+                    remarks=remarks_var.get().strip(),
+                )
+                dlg.destroy()
+                self.reload()
+            except Exception as exc:
+                messagebox.showerror("Error", str(exc), parent=dlg)
+
+        ttk.Button(btn_bar, text="Cancel", command=dlg.destroy).pack(side="right", padx=4)
+        ttk.Button(btn_bar, text="Assign", style="Accent.TButton", command=save_assignment).pack(side="right", padx=4)
+
+    def _remove_selected_subject(self, tree: ttk.Treeview) -> None:
+        selected = tree.selection()
+        if not selected:
+            messagebox.showwarning("Warning", "Select an assigned subject to remove.", parent=self)
+            return
+        row_vals = tree.item(selected[0], "values")
+        assign_id = int(row_vals[0])
+        sub_name = row_vals[2]
+        if not messagebox.askyesno("Confirm Removal", f"Unassign '{sub_name}' from this student?", parent=self):
+            return
+        subject_id = None
+        for s in self.profile.get("subjects") or []:
+            if s["id"] == assign_id:
+                subject_id = s["subject_id"]
+                break
+        if not subject_id:
+            return
+        try:
+            self.app.services.subjects.remove_student_subject(self.student_id, subject_id)
+            self.reload()
+        except Exception as exc:
+            messagebox.showerror("Error", str(exc), parent=self)
 
     def _build_finance_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)

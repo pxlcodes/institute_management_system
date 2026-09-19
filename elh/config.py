@@ -103,6 +103,8 @@ class AppConfig:
     maintenance_password: str = "Maintenance@2025"
     secret_key: str = ""
     web_session_expiry_minutes: int = 1440
+    web_host: str = "0.0.0.0"
+    web_port: int = 8080
     gemini_api_key: str = ""
     ai_provider: str = "gemini"
     ai_model: str = "gemini-3.6-flash"
@@ -223,6 +225,8 @@ def load_config(
         maintenance_password=get("MAINTENANCE_PASSWORD", AppConfig.maintenance_password),
         secret_key=get("SECRET_KEY", AppConfig.secret_key),
         web_session_expiry_minutes=max(1, int(get("WEB_SESSION_EXPIRY_MINUTES", AppConfig.web_session_expiry_minutes))),
+        web_host=get("WEB_HOST", AppConfig.web_host),
+        web_port=int(get("WEB_PORT", str(AppConfig.web_port))),
         gemini_api_key=values.get("ELH_GEMINI_API_KEY") or values.get("GEMINI_API_KEY") or AppConfig.gemini_api_key,
         ai_provider=get("AI_PROVIDER", AppConfig.ai_provider),
         ai_model=get("AI_MODEL", AppConfig.ai_model),
@@ -289,6 +293,8 @@ EDITABLE_ENV_KEYS = {
     "maintenance_password": "ELH_MAINTENANCE_PASSWORD",
     "secret_key": "ELH_SECRET_KEY",
     "web_session_expiry_minutes": "ELH_WEB_SESSION_EXPIRY_MINUTES",
+    "web_host": "ELH_WEB_HOST",
+    "web_port": "ELH_WEB_PORT",
     "gemini_api_key": "ELH_GEMINI_API_KEY",
     "ai_provider": "ELH_AI_PROVIDER",
     "ai_model": "ELH_AI_MODEL",
@@ -309,7 +315,7 @@ ENVIRONMENT_ONLY_KEYS = {
     "pos_printer_driver", "pos_printer_host",
     "pos_printer_port", "pos_printer_chars_per_line", "aakash_sms_token",
     "aakash_sms_endpoint", "sparrow_sms_token", "sparrow_sms_endpoint",
-    "secret_key", "web_session_expiry_minutes", "gemini_api_key",
+    "secret_key", "web_session_expiry_minutes", "web_host", "web_port", "gemini_api_key",
 }
 
 

@@ -282,6 +282,16 @@ class AttendanceRepository:
             (start_at, end_at),
         )
 
+    def student_punch_dates(self, start_at: str | None = None, end_at: str | None = None):
+        if start_at and end_at:
+            return self.db.query(
+                "SELECT person_id, occurred_at FROM attendance_logs WHERE person_type='student' AND occurred_at BETWEEN ? AND ?",
+                (start_at, end_at),
+            )
+        return self.db.query(
+            "SELECT person_id, occurred_at FROM attendance_logs WHERE person_type='student'"
+        )
+
     def student_members(self):
         return self.db.query(
             "SELECT id,student_name,class_name FROM students "

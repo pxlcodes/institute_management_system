@@ -55,6 +55,14 @@ try {
         Copy-Item -LiteralPath ".env" -Destination (Join-Path $distribution ".env") -Force
     }
     Copy-Item -LiteralPath "README.md" -Destination (Join-Path $distribution "README.md") -Force
+    if (Test-Path -LiteralPath "CPANEL_DEPLOYMENT_GUIDE.md") {
+        Copy-Item -LiteralPath "CPANEL_DEPLOYMENT_GUIDE.md" -Destination (Join-Path $distribution "CPANEL_DEPLOYMENT_GUIDE.md") -Force
+    }
+    foreach ($devFile in ("run_device_sync.bat", "install_device_sync_task.bat", "elh_device_sync_service.py")) {
+        if (Test-Path -LiteralPath $devFile) {
+            Copy-Item -LiteralPath $devFile -Destination (Join-Path $distribution $devFile) -Force
+        }
+    }
     $templateDirectory = Join-Path $distribution "templates"
     New-Item -ItemType Directory -Path $templateDirectory -Force | Out-Null
     Copy-Item -Path "templates\*.docx" -Destination $templateDirectory -Force

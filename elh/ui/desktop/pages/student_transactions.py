@@ -83,7 +83,9 @@ class StudentTransactionsPage(CrudPage, AccountSelectionMixin, PaymentProofMixin
                 ("discount", "Discount", 90), ("account", "Account", 140),
             ],
         )
-        self.add_payment_proof_buttons(self)
+        bar = self.add_payment_proof_buttons(self)
+        self.del_btn = ttk.Button(bar, text="🗑️ Delete Payment Record", command=self.delete_selected_transaction)
+        self.del_btn.pack(side="left", padx=3)
 
     def load_students(self):
         rows = self.app.lookup_cache.get(
@@ -197,6 +199,70 @@ class StudentTransactionsPage(CrudPage, AccountSelectionMixin, PaymentProofMixin
                         money(r["payment_amount"]), money(r["discount_amount"]),
                         r["account_name"] or "")
             )
+        if hasattr(self, "del_btn"):
+            if self.is_admin():
+                self.del_btn.configure(text="🗑️ Delete Payment Record", state="normal")
+            else:
+                self.del_btn.configure(text="🔒 Delete Payment (Admin Only)", state="disabled")
+
+    def is_admin(self) -> bool:
+        role = getattr(getattr(self.app, "session", None), "role", "")
+        return role in ("super_admin", "admin") or self.can("administration.manage")
+
+    def delete_selected_transaction(self):
+        if not self.is_admin():
+            messagebox.showerror("Access Denied", "Only administrators are authorized to delete payment records.", parent=self)
+            return
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Select Transaction", "Please select a payment record from the list to delete.", parent=self)
+            return
+        item = self.tree.item(selected[0])
+        txn_id = int(item["values"][0])
+        date_str = str(item["values"][1])
+        student_name = str(item["values"][2])
+        part_name = str(item["values"][4])
+        pay_str = str(item["values"][6])
+        disc_str = str(item["values"][7])
+
+        confirm_msg = (
+            f"⚠️ ARE YOU SURE YOU WANT TO DELETE THIS PAYMENT RECORD?\n\n"
+            f"• Transaction ID: #{txn_id}\n"
+            f"• Date: {date_str}\n"
+            f"• Student: {student_name}\n"
+            f"• Particular: {part_name}\n"
+            f"• Payment: {pay_str}  |  Discount: {disc_str}\n\n"
+            f"Deleting this payment will:\n"
+            f"1. Reverse this payment and restore the balance on associated due bills.\n"
+            f"2. Reverse the ledger entry in the payment account.\n"
+            f"3. Restore student overdue dues.\n"
+            f"4. Record the deletion in the administrative audit log.\n\n"
+            f"This action CANNOT be undone. Proceed?"
+        )
+        if not messagebox.askyesno("Confirm Delete Payment (Admin Access)", confirm_msg, icon="warning", parent=self):
+            return
+
+        try:
+            actor = getattr(self.app.session, "username", "admin")
+            actor_id = getattr(self.app.session, "user_id", None)
+            actor_role = getattr(self.app.session, "role", "admin")
+            res = self.app.services.billing.delete_payment(
+                transaction_id=txn_id,
+                actor_user_id=actor_id,
+                actor_username=actor,
+                actor_role=actor_role,
+            )
+            self.app.refresh_all()
+            messagebox.showinfo(
+                "Payment Deleted",
+                f"Payment record #{txn_id} was successfully deleted.\n\n"
+                f"• Reverted Payment: Rs. {res['reverted_payment']:,.2f}\n"
+                f"• Reverted Discount: Rs. {res['reverted_discount']:,.2f}\n"
+                f"Accounts and due bills have been updated.",
+                parent=self,
+            )
+        except Exception as err:
+            self.show_error(err)
 
 
 # ---------------------------------------------------------------------------

@@ -191,7 +191,10 @@ class TestCmsApiEndpoints(unittest.TestCase):
         )
 
     def tearDown(self):
-        self.tmp.cleanup()
+        try:
+            self.tmp.cleanup()
+        except Exception:
+            pass
 
     def test_public_website_data_accessible_without_auth(self):
         status, _, body = asyncio.run(_run_asgi_request(self.app, "GET", "/api/public/website-data"))

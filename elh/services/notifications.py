@@ -797,11 +797,12 @@ class NotificationService:
         row = self.db.query_one(
             "SELECT b.id, b.bill_number, b.billing_period, b.issue_date, b.due_date, "
             "b.total_amount, b.paid_amount, b.status, s.id student_id, s.student_name, s.contact, "
-            "s.parent_name, c.course_name "
+            "s.parent_name, c.course_name, COALESCE(cl.level_name, s.class_name, '') AS class_name "
             "FROM due_bills b "
             "JOIN enrollments e ON e.id = b.enrollment_id "
             "JOIN students s ON s.id = e.student_id "
             "JOIN courses c ON c.id = e.course_id "
+            "LEFT JOIN class_levels cl ON cl.id = s.class_level_id "
             "WHERE b.id = ?",
             (bill_id,),
         )
@@ -814,6 +815,7 @@ class NotificationService:
 
         student_name = row["student_name"] or "Student"
         bill_number = row["bill_number"] or f"BILL-{bill_id}"
+        class_name = row["class_name"] or ""
         course = row["course_name"] or "Course"
         period = row["billing_period"] or ""
         due_date = row["due_date"] or ""
@@ -877,6 +879,7 @@ class NotificationService:
         else:
             due_breakdown = f"• *Amount Due: Rs. {remaining:,.2f}*"
 
+        class_line = f"• Class / Grade: *{class_name}*\n" if class_name else ""
         message = (
             f"*{company_name}*\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
@@ -884,6 +887,7 @@ class NotificationService:
             f"Dear *{student_name}*,\n"
             f"Your tuition fee invoice for *{course}* ({period}) is ready.\n\n"
             f"• Bill No: *{bill_number}*\n"
+            f"{class_line}"
             f"• Total Bill Amount: *Rs. {total_amt:,.2f}*\n"
             f"{due_breakdown}\n"
             f"• Due Date: *{due_date}*\n\n"
@@ -906,6 +910,7 @@ class NotificationService:
             "bill_id": str(bill_id),
             "bill_number": bill_number,
             "student_name": student_name,
+            "class_name": class_name,
             "recipient": contact,
             "parent_name": dict(row).get("parent_name") or "",
             "amount_due": f"{grand_total:,.2f}",
@@ -927,11 +932,13 @@ class NotificationService:
         method = "Cash"
         date_str = ""
 
+        class_name = ""
         if kind == "student":
             row = self.db.query_one(
-                "SELECT st.*, s.student_name, s.contact, COALESCE(c.course_name, '') course_name "
+                "SELECT st.*, s.student_name, s.contact, COALESCE(cl.level_name, s.class_name, '') AS class_name, COALESCE(c.course_name, '') course_name "
                 "FROM student_transactions st "
                 "JOIN students s ON s.id = st.student_id "
+                "LEFT JOIN class_levels cl ON cl.id = s.class_level_id "
                 "LEFT JOIN enrollments e ON e.id = st.enrollment_id "
                 "LEFT JOIN courses c ON c.id = e.course_id "
                 "WHERE st.id = ?",
@@ -939,6 +946,7 @@ class NotificationService:
             )
             if row:
                 student_name = row["student_name"] or "Student"
+                class_name = row["class_name"] or ""
                 contact = (row["contact"] or "").strip()
                 receipt_no = row["receipt_no"] or f"REC-{record_id}"
                 amount = Decimal(str(row["payment_amount"] or 0))
@@ -956,6 +964,7 @@ class NotificationService:
 
         phone_footer = f"\nContact: {company_phone}" if company_phone else ""
 
+        class_line = f"• Class / Grade: *{class_name}*\n" if class_name else ""
         message = (
             f"*{company_name}*\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
@@ -963,6 +972,7 @@ class NotificationService:
             f"Dear *{student_name}*,\n"
             f"We have received your payment. Thank you!\n\n"
             f"• Receipt No: *{receipt_no}*\n"
+            f"{class_line}"
             f"• Amount Paid: *Rs. {amount:,.2f}*\n"
             f"• Payment Date: *{date_str}*\n"
             f"• Method: *{method}*\n"
@@ -982,6 +992,7 @@ class NotificationService:
             "record_id": str(record_id),
             "receipt_number": receipt_no,
             "student_name": student_name,
+            "class_name": class_name,
             "recipient": contact,
             "amount_paid": f"{amount:,.2f}",
             "balance": f"{balance:,.2f}",

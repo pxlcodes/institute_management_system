@@ -46,7 +46,12 @@ ACADEMIC_CALENDAR_COURSE_VERSION = 16
 ACADEMIC_CALENDAR_COURSE_NAME = "allow calendar events to apply to a specific course"
 PAYMENT_ALERT_REVIEW_VERSION = 17
 PAYMENT_ALERT_REVIEW_NAME = "add payment alert review history"
-LATEST_SCHEMA_VERSION = PAYMENT_ALERT_REVIEW_VERSION
+SUBJECT_MANAGEMENT_VERSION = 18
+SUBJECT_MANAGEMENT_NAME = "add subject master and student optional subject assignments"
+POS_PRINT_QUEUE_VERSION = 19
+POS_PRINT_QUEUE_NAME = "add pos print queue for remote institute printing"
+LATEST_SCHEMA_VERSION = POS_PRINT_QUEUE_VERSION
+
 
 
 INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
@@ -99,6 +104,11 @@ INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("course_certificates", "idx_certificates_student_course", ("student_name_snapshot", "course_name_snapshot")),
     ("sms_delivery_log", "idx_sms_delivery_status_created", ("status", "created_at")),
     ("sms_delivery_log", "idx_sms_delivery_recipient_created", ("recipient", "created_at")),
+    ("subjects", "idx_subjects_code", ("subject_code",)),
+    ("subjects", "idx_subjects_status_type", ("status", "subject_type")),
+    ("student_subjects", "idx_student_subjects_student", ("student_id", "status")),
+    ("student_subjects", "idx_student_subjects_subject", ("subject_id", "status")),
+    ("class_routines", "idx_routines_subject", ("subject_id",)),
 )
 
 
@@ -113,6 +123,15 @@ def _mysql_column_exists(db, table: str, column: str) -> bool:
         "SELECT COUNT(*) total FROM information_schema.columns "
         "WHERE table_schema=? AND table_name=? AND column_name=?",
         (db.config.database_name, table, column),
+    )
+    return bool(row and int(row["total"]))
+
+
+def _mysql_table_exists(db, table: str) -> bool:
+    row = db.query_one(
+        "SELECT COUNT(*) total FROM information_schema.tables "
+        "WHERE table_schema=? AND table_name=?",
+        (db.config.database_name, table),
     )
     return bool(row and int(row["total"]))
 
@@ -217,10 +236,12 @@ def normalize_mysql_schema(db) -> None:
         ensure_mysql_grade_migration(db)
         ensure_mysql_routine_plan_migration(db)
         ensure_mysql_academic_calendar_migration(db)
-        ensure_mysql_indexes(db)
         ensure_mysql_bill_month_guard(db)
         ensure_mysql_certificate_migration(db)
         ensure_mysql_student_profile_migration(db)
+        ensure_mysql_subject_migration(db)
+        ensure_mysql_pos_print_queue_migration(db)
+        ensure_mysql_indexes(db)
         return
 
     _mysql_assert_normalizable(db)
@@ -270,10 +291,12 @@ def normalize_mysql_schema(db) -> None:
     ensure_mysql_grade_migration(db)
     ensure_mysql_routine_plan_migration(db)
     ensure_mysql_academic_calendar_migration(db)
-    ensure_mysql_indexes(db)
     ensure_mysql_bill_month_guard(db)
     ensure_mysql_certificate_migration(db)
     ensure_mysql_student_profile_migration(db)
+    ensure_mysql_subject_migration(db)
+    ensure_mysql_pos_print_queue_migration(db)
+    ensure_mysql_indexes(db)
     db.execute(
         "INSERT INTO schema_migrations (version,migration_name) VALUES (?,?)",
         (NORMALIZATION_VERSION, NORMALIZATION_NAME),
@@ -314,6 +337,97 @@ def ensure_mysql_student_profile_migration(db) -> None:
             "INSERT INTO schema_migrations (version,migration_name) VALUES (?,?)",
             (STUDENT_PROFILE_VERSION, STUDENT_PROFILE_NAME),
         )
+
+
+def ensure_mysql_subject_migration(db) -> None:
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS subjects ("
+        "id INTEGER AUTO_INCREMENT PRIMARY KEY,"
+        "subject_code VARCHAR(50) NOT NULL UNIQUE,"
+        "subject_name VARCHAR(150) NOT NULL,"
+        "subject_type VARCHAR(50) NOT NULL DEFAULT 'Optional',"
+        "class_level_id INTEGER NULL,"
+        "class_name VARCHAR(100) NULL,"
+        "status VARCHAR(30) NOT NULL DEFAULT 'Active',"
+        "remarks TEXT,"
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "FOREIGN KEY(class_level_id) REFERENCES class_levels(id) ON DELETE SET NULL) ENGINE=InnoDB"
+    )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS student_subjects ("
+        "id INTEGER AUTO_INCREMENT PRIMARY KEY,"
+        "student_id INTEGER NOT NULL,"
+        "subject_id INTEGER NOT NULL,"
+        "enrollment_type VARCHAR(50) NOT NULL DEFAULT 'Optional',"
+        "assigned_date VARCHAR(30) NULL,"
+        "status VARCHAR(30) NOT NULL DEFAULT 'Active',"
+        "remarks TEXT,"
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "UNIQUE KEY uq_student_subject(student_id, subject_id),"
+        "FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE,"
+        "FOREIGN KEY(subject_id) REFERENCES subjects(id) ON DELETE CASCADE) ENGINE=InnoDB"
+    )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS teacher_subjects ("
+        "id INTEGER AUTO_INCREMENT PRIMARY KEY,"
+        "teacher_id INTEGER NOT NULL,"
+        "subject_id INTEGER NOT NULL,"
+        "status VARCHAR(30) NOT NULL DEFAULT 'Active',"
+        "remarks TEXT,"
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "UNIQUE KEY uq_teacher_subject(teacher_id, subject_id),"
+        "FOREIGN KEY(teacher_id) REFERENCES teachers(id) ON DELETE CASCADE,"
+        "FOREIGN KEY(subject_id) REFERENCES subjects(id) ON DELETE CASCADE) ENGINE=InnoDB"
+    )
+    if not _mysql_column_exists(db, "class_routines", "subject_id"):
+        db.execute("ALTER TABLE class_routines ADD COLUMN subject_id INTEGER NULL")
+
+    seed_subjects = [
+        ("CS-101", "Computer Science", "Optional", "Optional elective subject for secondary & higher secondary"),
+        ("BIO-101", "Biology", "Optional", "Optional elective subject for science stream"),
+        ("ACC-101", "Account", "Optional", "Optional elective accounting subject for management stream"),
+        ("OPT-MATH", "Opt. Mathematics", "Optional", "Optional elective mathematics for secondary level"),
+        ("ECO-101", "Economics", "Optional", "Optional elective economics subject"),
+        ("ENG-101", "Compulsory English", "Compulsory", "Standard compulsory English curriculum"),
+        ("NEP-101", "Compulsory Nepali", "Compulsory", "Standard compulsory Nepali curriculum"),
+        ("MATH-101", "Compulsory Mathematics", "Compulsory", "Standard compulsory General Mathematics"),
+        ("SCI-101", "Science", "Compulsory", "Standard compulsory General Science"),
+        ("SOC-101", "Social Studies", "Compulsory", "Standard compulsory Social Studies"),
+        ("PHY-101", "Physics", "Compulsory", "Core Physics for secondary/higher secondary"),
+        ("CHEM-101", "Chemistry", "Compulsory", "Core Chemistry for secondary/higher secondary"),
+    ]
+    for code, name, stype, remarks in seed_subjects:
+        existing = db.query_one("SELECT id FROM subjects WHERE subject_code=? OR subject_name=?", (code, name))
+        if not existing:
+            db.execute(
+                "INSERT INTO subjects (subject_code, subject_name, subject_type, status, remarks) VALUES (?, ?, ?, 'Active', ?)",
+                (code, name, stype, remarks),
+            )
+
+    applied = db.query_one("SELECT version FROM schema_migrations WHERE version=?", (SUBJECT_MANAGEMENT_VERSION,))
+    if not applied:
+        db.execute("INSERT INTO schema_migrations (version, migration_name) VALUES (?, ?)", (SUBJECT_MANAGEMENT_VERSION, SUBJECT_MANAGEMENT_NAME))
+
+
+def ensure_mysql_pos_print_queue_migration(db) -> None:
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS pos_print_queue ("
+        "id INTEGER AUTO_INCREMENT PRIMARY KEY,"
+        "receipt_number VARCHAR(100) NOT NULL DEFAULT '',"
+        "customer_name VARCHAR(255) NOT NULL DEFAULT '',"
+        "title VARCHAR(100) NOT NULL DEFAULT 'RECEIPT',"
+        "payload_json LONGTEXT NOT NULL,"
+        "status VARCHAR(50) NOT NULL DEFAULT 'pending',"
+        "attempts INT NOT NULL DEFAULT 0,"
+        "error_message TEXT NULL,"
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "printed_at DATETIME NULL"
+        ") ENGINE=InnoDB"
+    )
+    applied = db.query_one("SELECT version FROM schema_migrations WHERE version=?", (POS_PRINT_QUEUE_VERSION,))
+    if not applied:
+        db.execute("INSERT INTO schema_migrations (version, migration_name) VALUES (?, ?)", (POS_PRINT_QUEUE_VERSION, POS_PRINT_QUEUE_NAME))
+
 
 
 def ensure_mysql_application_settings_migration(db) -> None:
@@ -671,6 +785,10 @@ def ensure_mysql_bill_month_guard(db) -> None:
 
 def ensure_mysql_indexes(db) -> None:
     for table, name, columns in INDEXES:
+        if not _mysql_table_exists(db, table):
+            continue
+        if not all(_mysql_column_exists(db, table, col) for col in columns):
+            continue
         if _mysql_index_exists(db, table, columns):
             continue
         column_sql = ",".join(f"`{_identifier(column)}`" for column in columns)
@@ -871,6 +989,54 @@ def normalize_sqlite_schema(path) -> None:
               FOREIGN KEY(proxy_request_id) REFERENCES proxy_class_requests(id) ON DELETE CASCADE,
               FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE
             );
+            CREATE TABLE IF NOT EXISTS subjects (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              subject_code TEXT NOT NULL UNIQUE,
+              subject_name TEXT NOT NULL,
+              subject_type TEXT NOT NULL DEFAULT 'Optional',
+              class_level_id INTEGER NULL,
+              class_name TEXT NULL,
+              status TEXT NOT NULL DEFAULT 'Active',
+              remarks TEXT,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              FOREIGN KEY(class_level_id) REFERENCES class_levels(id) ON DELETE SET NULL
+            );
+            CREATE TABLE IF NOT EXISTS student_subjects (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              student_id INTEGER NOT NULL,
+              subject_id INTEGER NOT NULL,
+              enrollment_type TEXT NOT NULL DEFAULT 'Optional',
+              assigned_date TEXT NULL,
+              status TEXT NOT NULL DEFAULT 'Active',
+              remarks TEXT,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(student_id, subject_id),
+              FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE,
+              FOREIGN KEY(subject_id) REFERENCES subjects(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS teacher_subjects (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              teacher_id INTEGER NOT NULL,
+              subject_id INTEGER NOT NULL,
+              status TEXT NOT NULL DEFAULT 'Active',
+              remarks TEXT,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(teacher_id, subject_id),
+              FOREIGN KEY(teacher_id) REFERENCES teachers(id) ON DELETE CASCADE,
+              FOREIGN KEY(subject_id) REFERENCES subjects(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS pos_print_queue (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              receipt_number TEXT NOT NULL DEFAULT '',
+              customer_name TEXT NOT NULL DEFAULT '',
+              title TEXT NOT NULL DEFAULT 'RECEIPT',
+              payload_json TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'pending',
+              attempts INTEGER NOT NULL DEFAULT 0,
+              error_message TEXT,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              printed_at TEXT
+            );
             """
         )
         if "class_count" not in _sqlite_columns(connection, "salary_payouts"):
@@ -883,6 +1049,8 @@ def normalize_sqlite_schema(path) -> None:
             connection.execute("ALTER TABLE class_routines ADD COLUMN routine_plan_id INTEGER")
         if "course_id" not in _sqlite_columns(connection, "academic_calendar_events"):
             connection.execute("ALTER TABLE academic_calendar_events ADD COLUMN course_id INTEGER")
+        if "subject_id" not in _sqlite_columns(connection, "class_routines"):
+            connection.execute("ALTER TABLE class_routines ADD COLUMN subject_id INTEGER")
         for table in ("students", "class_routines"):
             if "grade_id" not in _sqlite_columns(connection, table):
                 connection.execute(f"ALTER TABLE {table} ADD COLUMN grade_id INTEGER")
@@ -944,6 +1112,26 @@ def normalize_sqlite_schema(path) -> None:
             )
             """
         )
+
+        # Seed teacher_subjects from existing teachers.subject where possible
+        try:
+            teacher_rows = connection.execute("SELECT id, subject FROM teachers WHERE subject IS NOT NULL AND subject != ''").fetchall()
+            for trow in teacher_rows:
+                t_id = trow[0]
+                raw_subj = trow[1] or ""
+                parts = [p.strip() for p in re.split(r"[,;/]+", raw_subj) if p.strip()]
+                for part in parts:
+                    s_match = connection.execute(
+                        "SELECT id FROM subjects WHERE LOWER(subject_name) = LOWER(?) OR LOWER(subject_code) = LOWER(?) LIMIT 1",
+                        (part, part),
+                    ).fetchone()
+                    if s_match:
+                        connection.execute(
+                            "INSERT OR IGNORE INTO teacher_subjects (teacher_id, subject_id, status) VALUES (?, ?, 'Active')",
+                            (t_id, s_match[0]),
+                        )
+        except Exception:
+            pass
 
         for table, name, columns_used in INDEXES:
             columns_sql = ",".join(_identifier(column) for column in columns_used)
@@ -1032,6 +1220,32 @@ def normalize_sqlite_schema(path) -> None:
         connection.execute("INSERT OR IGNORE INTO schema_migrations (version,migration_name) VALUES (?,?)", (ROUTINE_PLAN_VERSION, ROUTINE_PLAN_NAME))
         connection.execute("INSERT OR IGNORE INTO schema_migrations (version,migration_name) VALUES (?,?)", (ACADEMIC_CALENDAR_VERSION, ACADEMIC_CALENDAR_NAME))
         connection.execute("INSERT OR IGNORE INTO schema_migrations (version,migration_name) VALUES (?,?)", (ACADEMIC_CALENDAR_COURSE_VERSION, ACADEMIC_CALENDAR_COURSE_NAME))
+        seed_subjects = [
+            ("CS-101", "Computer Science", "Optional", "Optional elective subject for secondary & higher secondary"),
+            ("BIO-101", "Biology", "Optional", "Optional elective subject for science stream"),
+            ("ACC-101", "Account", "Optional", "Optional elective accounting subject for management stream"),
+            ("OPT-MATH", "Opt. Mathematics", "Optional", "Optional elective mathematics for secondary level"),
+            ("ECO-101", "Economics", "Optional", "Optional elective economics subject"),
+            ("ENG-101", "Compulsory English", "Compulsory", "Standard compulsory English curriculum"),
+            ("NEP-101", "Compulsory Nepali", "Compulsory", "Standard compulsory Nepali curriculum"),
+            ("MATH-101", "Compulsory Mathematics", "Compulsory", "Standard compulsory General Mathematics"),
+            ("SCI-101", "Science", "Compulsory", "Standard compulsory General Science"),
+            ("SOC-101", "Social Studies", "Compulsory", "Standard compulsory Social Studies"),
+            ("PHY-101", "Physics", "Compulsory", "Core Physics for secondary/higher secondary"),
+            ("CHEM-101", "Chemistry", "Compulsory", "Core Chemistry for secondary/higher secondary"),
+        ]
+        for code, name, stype, remarks in seed_subjects:
+            connection.execute(
+                "INSERT OR IGNORE INTO subjects (subject_code, subject_name, subject_type, status, remarks) "
+                "VALUES (?, ?, ?, 'Active', ?)",
+                (code, name, stype, remarks),
+            )
+        connection.execute(
+            "UPDATE class_routines SET subject_id=(SELECT id FROM subjects WHERE LOWER(TRIM(subjects.subject_name))=LOWER(TRIM(class_routines.subject_name)) LIMIT 1) "
+            "WHERE subject_id IS NULL"
+        )
+        connection.execute("INSERT OR IGNORE INTO schema_migrations (version,migration_name) VALUES (?,?)", (SUBJECT_MANAGEMENT_VERSION, SUBJECT_MANAGEMENT_NAME))
+        connection.execute("INSERT OR IGNORE INTO schema_migrations (version,migration_name) VALUES (?,?)", (POS_PRINT_QUEUE_VERSION, POS_PRINT_QUEUE_NAME))
         connection.commit()
     except Exception:
         connection.rollback()

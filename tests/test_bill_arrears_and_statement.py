@@ -13,6 +13,7 @@ from elh.config import AppConfig
 from elh.infrastructure import create_database
 from elh.services.container import ServiceContainer
 from elh.web.app import create_app
+from elh.hardware.printing.network_escpos import NetworkEscPosPrinter
 from tests.test_web_security import _run_asgi_request
 
 
@@ -378,6 +379,239 @@ class BillArrearsAndStatementTests(unittest.TestCase):
         self.assertEqual(len(res_bills), 1)
         self.assertEqual(res_bills[0]["id"], comb_bill.id)
         self.assertEqual(res_bills[0]["billing_period"], "2083/01 to 2083/03")
+
+    def test_pos_student_statement_and_bulk_print(self):
+        # Create second student & enrollment
+        student2_id = self.db.execute(
+            "INSERT INTO students (student_name, class_name, contact, status, joining_date) "
+            "VALUES ('Sita Sharma', 'Class 10', '9800000002', 'Active', '2083/01/01')"
+        )
+        enrollment2_id = self.db.execute(
+            "INSERT INTO enrollments (student_id, course_id, level, start_date, monthly_fee, status) "
+            "VALUES (?, ?, 'Class 10', '2083/01/01', 2000, 'Active')",
+            (student2_id, self.course_id),
+        )
+
+        # Generate bills for student 1 (Bikash Rai: 2 bills)
+        b1 = self.services.billing.generate(self.enrollment_id, "2083/01", "2083/01/05", "2083/01/15").bill
+        b2 = self.services.billing.generate(self.enrollment_id, "2083/02", "2083/02/05", "2083/02/15").bill
+
+        # Generate bill for student 2 (Sita Sharma: 1 bill)
+        b3 = self.services.billing.generate(enrollment2_id, "2083/01", "2083/01/05", "2083/01/15").bill
+
+        # Capture receipts printed
+        printed_receipts = []
+        self.services.printing.print_receipt = printed_receipts.append
+
+        # 1. Print POS statement for single student (student 1)
+        receipt = self.services.billing.print_pos_student_statement(self.student_id)
+        self.assertEqual(len(printed_receipts), 1)
+        self.assertEqual(receipt.title, "STUDENT CREDIT STATEMENT")
+        self.assertEqual(receipt.customer_name, "Bikash Rai")
+        self.assertEqual(receipt.receipt_number, f"STMT-{self.student_id}")
+        self.assertEqual(len(receipt.lines), 2)
+        self.assertEqual(receipt.total, Decimal("3000"))
+
+        # Check repository marked pos printed
+        b1_db = self.db.query_one("SELECT pos_printed_at FROM due_bills WHERE id=?", (b1.id,))
+        b2_db = self.db.query_one("SELECT pos_printed_at FROM due_bills WHERE id=?", (b2.id,))
+        self.assertIsNotNone(b1_db["pos_printed_at"])
+        self.assertIsNotNone(b2_db["pos_printed_at"])
+
+        # 2. Bulk Print POS statements for both students
+        printed_receipts.clear()
+        count = self.services.billing.print_pos_student_statements([self.student_id, student2_id])
+        self.assertEqual(count, 2)
+        self.assertEqual(len(printed_receipts), 2)
+        self.assertEqual(printed_receipts[0].customer_name, "Bikash Rai")
+        self.assertEqual(printed_receipts[0].total, Decimal("3000"))
+        self.assertEqual(printed_receipts[1].customer_name, "Sita Sharma")
+        self.assertEqual(printed_receipts[1].total, Decimal("2000"))
+
+        # 3. Bulk Print individual POS bills for both students (3 bills total)
+        printed_receipts.clear()
+        bill_count = self.services.billing.print_pos_student_bills([self.student_id, student2_id])
+        self.assertEqual(bill_count, 3)
+        self.assertEqual(len(printed_receipts), 3)
+        self.assertEqual(printed_receipts[0].title, "DUE BILL")
+
+        # 4. Error validation: no students selected
+        with self.assertRaises(ValueError):
+            self.services.billing.print_pos_student_statements([])
+
+        with self.assertRaises(ValueError):
+            self.services.billing.print_pos_student_bills([])
+
+    def test_filter_by_class_to_print_pos_and_dues_summary(self):
+        # Create student 2 in Class 9
+        student2_id = self.db.execute(
+            "INSERT INTO students (student_name, class_name, contact, status, joining_date) "
+            "VALUES ('Gita Thapa', 'Class 9', '9800000009', 'Active', '2083/01/01')"
+        )
+        enrollment2_id = self.db.execute(
+            "INSERT INTO enrollments (student_id, course_id, level, start_date, monthly_fee, status) "
+            "VALUES (?, ?, 'Class 9', '2083/01/01', 1500, 'Active')",
+            (student2_id, self.course_id),
+        )
+
+        # Generate bills for both students
+        b_c10 = self.services.billing.generate(self.enrollment_id, "2083/04", "2083/04/05", "2083/04/15").bill
+        b_c9 = self.services.billing.generate(enrollment2_id, "2083/04", "2083/04/05", "2083/04/15").bill
+
+        # 1. Verify DueBill models have correct class_name
+        self.assertEqual(b_c10.class_name, "Class 10")
+        self.assertEqual(b_c9.class_name, "Class 9")
+
+        # 2. Verify get_student_dues_summary filtered by class
+        c10_summaries = self.services.billing.get_student_dues_summary(class_name="Class 10")
+        self.assertTrue(all(s["class_name"] == "Class 10" for s in c10_summaries))
+        self.assertTrue(any(s["student_name"] == "Bikash Rai" for s in c10_summaries))
+        self.assertFalse(any(s["student_name"] == "Gita Thapa" for s in c10_summaries))
+
+        c9_summaries = self.services.billing.get_student_dues_summary(class_name="Class 9")
+        self.assertEqual(len(c9_summaries), 1)
+        self.assertEqual(c9_summaries[0]["student_name"], "Gita Thapa")
+        self.assertEqual(c9_summaries[0]["class_name"], "Class 9")
+
+        # 3. Verify get_unpaid_bills_by_class
+        c10_unpaid = self.services.billing.get_unpaid_bills_by_class("Class 10")
+        self.assertTrue(all(getattr(b, "class_name", "") == "Class 10" for b in c10_unpaid))
+        self.assertTrue(any(b.id == b_c10.id for b in c10_unpaid))
+        self.assertFalse(any(b.id == b_c9.id for b in c10_unpaid))
+
+        # 4. Verify print_pos_by_class (bills mode and statement mode)
+        printed_receipts = []
+        self.services.printing.print_receipt = printed_receipts.append
+        if hasattr(self.app.state, "services"):
+            self.app.state.services.billing.printing.print_receipt = printed_receipts.append
+
+        res_bills = self.services.billing.print_pos_by_class("Class 9", mode="bills")
+        self.assertTrue(res_bills["ok"])
+        self.assertEqual(res_bills["mode"], "bills")
+        self.assertEqual(res_bills["printed_count"], 1)
+        self.assertEqual(len(printed_receipts), 1)
+        self.assertEqual(printed_receipts[0].customer_name, "Gita Thapa")
+
+        printed_receipts.clear()
+        res_stmt = self.services.billing.print_pos_by_class("Class 9", mode="statement")
+        self.assertTrue(res_stmt["ok"])
+        self.assertEqual(res_stmt["mode"], "statement")
+        self.assertEqual(res_stmt["printed_count"], 1)
+        self.assertEqual(len(printed_receipts), 1)
+        self.assertEqual(printed_receipts[0].title, "STUDENT CREDIT STATEMENT")
+
+        # 5. Web API endpoints: GET /api/bills?class_name=Class 9
+        status, _, body = asyncio.run(_run_asgi_request(
+            self.app,
+            "GET",
+            "/api/bills?class_name=Class%209",
+            headers={"Authorization": f"Bearer {self.admin_token}"}
+        ))
+        self.assertEqual(status, 200)
+        web_bills = json.loads(body.decode("utf-8"))
+        self.assertEqual(len(web_bills), 1)
+        self.assertEqual(web_bills[0]["class_name"], "Class 9")
+        self.assertEqual(web_bills[0]["student_name"], "Gita Thapa")
+
+        # 6. Web API endpoints: GET /api/bills/student-dues-summary?class_name=Class 9
+        status, _, body = asyncio.run(_run_asgi_request(
+            self.app,
+            "GET",
+            "/api/bills/student-dues-summary?class_name=Class%209",
+            headers={"Authorization": f"Bearer {self.admin_token}"}
+        ))
+        self.assertEqual(status, 200)
+        web_summaries = json.loads(body.decode("utf-8"))
+        self.assertEqual(len(web_summaries), 1)
+        self.assertEqual(web_summaries[0]["class_name"], "Class 9")
+
+        # 7. Web API endpoints: POST /api/bills/print-pos-by-class
+        status, _, body = asyncio.run(_run_asgi_request(
+            self.app,
+            "POST",
+            "/api/bills/print-pos-by-class",
+            headers={"Authorization": f"Bearer {self.admin_token}"},
+            body={"class_name": "Class 9", "mode": "statement"}
+        ))
+        self.assertEqual(status, 200)
+        res_web = json.loads(body.decode("utf-8"))
+        self.assertTrue(res_web["ok"])
+        self.assertEqual(res_web["printed_count"], 1)
+
+        # 8. Web API endpoints: POST /api/bills/{bill_id}/print-pos
+        status, _, body = asyncio.run(_run_asgi_request(
+            self.app,
+            "POST",
+            f"/api/bills/{b_c9.id}/print-pos",
+            headers={"Authorization": f"Bearer {self.admin_token}"}
+        ))
+        self.assertEqual(status, 200)
+        res_single = json.loads(body.decode("utf-8"))
+        self.assertTrue(res_single["ok"])
+
+    def test_class_in_bill_pos_and_receipt_rendering(self):
+        # 1. Single Bill POS
+        bill = self.services.billing.generate(
+            self.enrollment_id, "2083/01", "2083/01/05", "2083/01/15"
+        ).bill
+        self.assertEqual(bill.class_name, "Class 10")
+
+        printed_receipts = []
+        self.services.billing.printing.print_receipt = lambda r: printed_receipts.append(r)
+
+        self.services.billing.print_pos(bill)
+        self.assertEqual(len(printed_receipts), 1)
+        receipt = printed_receipts[0]
+        self.assertEqual(receipt.class_name, "Class 10")
+
+        printer = NetworkEscPosPrinter("127.0.0.1")
+        rendered = printer._render(receipt)
+        self.assertIn(b"Class   : Class 10", rendered)
+
+        # 2. Consolidated Statement POS
+        stmt_receipt = self.services.billing.print_pos_student_statement(self.student_id)
+        self.assertEqual(stmt_receipt.class_name, "Class 10")
+        rendered_stmt = printer._render(stmt_receipt)
+        self.assertIn(b"Class   : Class 10", rendered_stmt)
+
+    def test_class_in_bill_pdf_and_statement_pdf(self):
+        bill = self.services.billing.generate(
+            self.enrollment_id, "2083/01", "2083/01/05", "2083/01/15"
+        ).bill
+
+        # Single Bill PDF
+        pdf_path = self.services.billing.create_pdf(bill)
+        self.assertTrue(pdf_path.exists())
+        self.assertGreater(pdf_path.stat().st_size, 1000)
+
+        # Batch PDF
+        batch_pdf = self.services.billing.create_batch_pdf([bill])
+        self.assertTrue(batch_pdf.exists())
+        self.assertGreater(batch_pdf.stat().st_size, 1000)
+
+        # Consolidated Statement PDF
+        stmt_pdf = self.services.billing.create_consolidated_statement_pdf(bills=[bill])
+        self.assertTrue(stmt_pdf.exists())
+        self.assertGreater(stmt_pdf.stat().st_size, 1000)
+
+    def test_class_in_whatsapp_bill_notice(self):
+        bill = self.services.billing.generate(
+            self.enrollment_id, "2083/01", "2083/01/05", "2083/01/15"
+        ).bill
+
+        wa_data = self.services.notifications.build_bill_whatsapp_message(bill.id)
+        self.assertEqual(wa_data["student_name"], "Bikash Rai")
+        self.assertEqual(wa_data["class_name"], "Class 10")
+        self.assertIn("Class / Grade: *Class 10*", wa_data["message"])
+
+        # Pay bill and verify payment whatsapp message includes class
+        pay_result = self.services.billing.pay_bills(
+            [bill.id], Decimal("1500"), "2083/01/10", self.account_id, "Cash", "REC-099"
+        )
+        txn_id = pay_result["transaction_ids"][0]
+        pay_wa = self.services.notifications.build_payment_whatsapp_message("student", txn_id)
+        self.assertEqual(pay_wa["class_name"], "Class 10")
+        self.assertIn("Class / Grade: *Class 10*", pay_wa["message"])
 
 
 if __name__ == "__main__":
