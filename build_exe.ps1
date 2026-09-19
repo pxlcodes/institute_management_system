@@ -90,7 +90,13 @@ Keep the ZIP private because the .env may contain database and SMS credentials.
     if (Test-Path -LiteralPath $releaseArchive) {
         Remove-Item -LiteralPath $releaseArchive -Force
     }
-    Compress-Archive -Path (Join-Path $distribution "*") -DestinationPath $releaseArchive -CompressionLevel Optimal
+    Write-Host "Compressing release distribution..." -ForegroundColor Cyan
+    $baseArchive = $releaseArchive -replace '\.zip$', ''
+    & $buildPython -c "import shutil, sys; shutil.make_archive(sys.argv[1], 'zip', sys.argv[2])" $baseArchive $distribution
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $releaseArchive)) {
+        Start-Sleep -Seconds 2
+        Compress-Archive -Path (Join-Path $distribution "*") -DestinationPath $releaseArchive -CompressionLevel Optimal
+    }
     $archiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $releaseArchive).Hash
     Set-Content -LiteralPath "$releaseArchive.sha256" -Value "$archiveHash  $(Split-Path -Leaf $releaseArchive)" -Encoding ASCII
 
